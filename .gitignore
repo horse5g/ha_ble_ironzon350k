@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Home Assistant runtime / secrets
+.env
+secrets.yaml
+**/devices.json
+*.storage
+
+# BLE / reverse-engineering captures
+btsnoop_hci.log*
+*.pcap
+*.pcapng
+*.apk
+*.log
+
+# Local key/API dumps
+*keys*.json
+*credentials*.json
+*seckey*.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
