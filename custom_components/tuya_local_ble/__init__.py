@@ -13,9 +13,6 @@ from homeassistant.const import CONF_ADDRESS, EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .tuya_ble import TuyaBLEDevice
-
-from .keyman import HASSTuyaBLEDeviceManager
 from .const import (
     CONF_KEEP_CONNECTED,
     CONF_PROTOCOL_LOG_LEVEL,
@@ -23,7 +20,9 @@ from .const import (
     PROTOCOL_LOG_OFF,
 )
 from .devices import TuyaBLECoordinator, TuyaBLEData, get_device_product_info
+from .keyman import HASSTuyaBLEDeviceManager
 from .services import async_register_services
+from .tuya_ble import TuyaBLEDevice
 
 PLATFORMS: list[Platform] = [
     Platform.BUTTON,
@@ -40,6 +39,12 @@ PLATFORMS: list[Platform] = [
 _LOGGER = logging.getLogger(__name__)
 
 
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up integration-level resources."""
+    async_register_services(hass)
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Tuya BLE from a config entry."""
     address: str = entry.data[CONF_ADDRESS]
@@ -50,6 +55,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady(
             f"Could not find Tuya BLE device with address {address}"
         )
+
     manager = HASSTuyaBLEDeviceManager(hass, entry.options.copy())
     device = TuyaBLEDevice(manager, ble_device)
     await device.initialize()
@@ -66,7 +72,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     product_info = get_device_product_info(device)
 
     coordinator = TuyaBLECoordinator(hass, device)
-    await device.update()
+    try:
+        await device.update()
+    except BLEAK_EXCEPTIONS as ex:
+        await device.stop()
+        raise ConfigEntryNotReady(
+            f"Could not communicate with Tuya BLE device with address {address}"
+        ) from ex
 
     last_raykube_advertisement_update = 0.0
 
@@ -123,7 +135,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         manager,
         coordinator,
     )
-    async_register_services(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
