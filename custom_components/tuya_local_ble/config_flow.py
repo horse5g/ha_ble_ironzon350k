@@ -7,21 +7,18 @@ from typing import Any
 
 import voluptuous as vol
 
+from homeassistant.components.bluetooth import (
+    BluetoothServiceInfoBleak,
+    async_discovered_service_info,
+)
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
 )
-from homeassistant.components.bluetooth import (
-    BluetoothServiceInfoBleak,
-    async_discovered_service_info,
-)
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import callback
-#from homeassistant.data_entry_flow import FlowResult
-
-from .tuya_ble import SERVICE_UUID, TuyaBLEDeviceCredentials
 
 from .const import (
     CONF_KEEP_CONNECTED,
@@ -32,10 +29,12 @@ from .const import (
     PROTOCOL_LOG_OFF,
     PROTOCOL_LOG_RAW,
 )
-from .devices import TuyaBLEData, get_device_readable_name
+from .devices import get_device_readable_name
 from .keyman import HASSTuyaBLEDeviceManager
+from .tuya_ble import SERVICE_UUID
 
 _LOGGER = logging.getLogger(__name__)
+
 
 class TuyaBLEConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Tuya BLE."""
@@ -51,6 +50,12 @@ class TuyaBLEConfigFlow(ConfigFlow, domain=DOMAIN):
         self._manager: HASSTuyaBLEDeviceManager | None = None
         self._get_device_info_error = False
 
+    def _get_manager(self) -> HASSTuyaBLEDeviceManager:
+        """Create the credentials manager on first use."""
+        if self._manager is None:
+            self._manager = HASSTuyaBLEDeviceManager(self.hass, self._data)
+        return self._manager
+
     @staticmethod
     @callback
     def async_get_options_flow(
@@ -59,39 +64,41 @@ class TuyaBLEConfigFlow(ConfigFlow, domain=DOMAIN):
         """Get the options flow for this handler."""
         return TuyaBLEOptionsFlow()
 
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle setup started manually from the Integrations UI."""
+        return await self.async_step_device(user_input)
+
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfoBleak
     ) -> ConfigFlowResult:
-        """Handle the bluetooth discovery step."""
+        """Handle the Bluetooth discovery step."""
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
         self._discovery_info = discovery_info
-        if self._manager is None:
-            self._manager = HASSTuyaBLEDeviceManager(self.hass, self._data)
-        #await self._manager.build_cache()
+        manager = self._get_manager()
         self.context["title_placeholders"] = {
-            "name": await get_device_readable_name(
-                discovery_info,
-                self._manager,
-            )
+            "name": await get_device_readable_name(discovery_info, manager)
         }
         return await self.async_step_device()
 
     async def async_step_device(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle the user step to pick discovered device."""
+        """Handle the user step to pick a discovered device."""
         errors: dict[str, str] = {}
+        manager = self._get_manager()
 
         if user_input is not None:
             address = user_input[CONF_ADDRESS]
             discovery_info = self._discovered_devices[address]
-            local_name = await get_device_readable_name(discovery_info, self._manager)
+            local_name = await get_device_readable_name(discovery_info, manager)
             await self.async_set_unique_id(
                 discovery_info.address, raise_on_progress=False
             )
             self._abort_if_unique_id_configured()
-            credentials = await self._manager.get_device_credentials(
+            credentials = await manager.get_device_credentials(
                 discovery_info.address, self._get_device_info_error, True
             )
             self._data[CONF_ADDRESS] = discovery_info.address
@@ -114,7 +121,7 @@ class TuyaBLEConfigFlow(ConfigFlow, domain=DOMAIN):
                     discovery.address in current_addresses
                     or discovery.address in self._discovered_devices
                     or discovery.service_data is None
-                    or not SERVICE_UUID in discovery.service_data.keys()
+                    or SERVICE_UUID not in discovery.service_data
                 ):
                     continue
                 self._discovered_devices[discovery.address] = discovery
@@ -122,11 +129,11 @@ class TuyaBLEConfigFlow(ConfigFlow, domain=DOMAIN):
         if not self._discovered_devices:
             return self.async_abort(reason="no_unconfigured_devices")
 
-        def_address: str
-        if user_input:
-            def_address = user_input.get(CONF_ADDRESS)
-        else:
-            def_address = list(self._discovered_devices)[0]
+        def_address = (
+            user_input.get(CONF_ADDRESS)
+            if user_input is not None
+            else next(iter(self._discovered_devices))
+        )
 
         return self.async_show_form(
             step_id="device",
@@ -138,8 +145,7 @@ class TuyaBLEConfigFlow(ConfigFlow, domain=DOMAIN):
                     ): vol.In(
                         {
                             service_info.address: await get_device_readable_name(
-                                service_info,
-                                self._manager,
+                                service_info, manager
                             )
                             for service_info in self._discovered_devices.values()
                         }
