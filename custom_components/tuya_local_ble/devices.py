@@ -1,38 +1,31 @@
 """The Tuya BLE integration."""
 from __future__ import annotations
+
 from dataclasses import dataclass
-
 import logging
-from homeassistant.const import CONF_ADDRESS, CONF_DEVICE_ID
-
-from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.entity import (
-    DeviceInfo,
-    EntityDescription,
-)
-from homeassistant.helpers.event import async_call_later
-from homeassistant.helpers.update_coordinator import (
-    CoordinatorEntity,
-    DataUpdateCoordinator,
-)
 
 from home_assistant_bluetooth import BluetoothServiceInfoBleak
+from homeassistant.const import CONF_ADDRESS, CONF_DEVICE_ID
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.entity import DeviceInfo, EntityDescription
+from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
+
+from .const import (
+    DEVICE_DEF_MANUFACTURER,
+    DOMAIN,
+    DP_350K_LAST_ACCESS_EVENT,
+    EVENT_350K,
+    FINGERBOT_BUTTON_EVENT,
+    SET_DISCONNECTED_DELAY,
+)
+from .keyman import HASSTuyaBLEDeviceManager
 from .tuya_ble import (
     AbstaractTuyaBLEDeviceManager,
     TuyaBLEDataPoint,
     TuyaBLEDevice,
     TuyaBLEDeviceCredentials,
-)
-
-from .keyman import HASSTuyaBLEDeviceManager
-from .const import (
-    DEVICE_DEF_MANUFACTURER,
-    DOMAIN,
-    EVENT_350K,
-    DP_350K_LAST_ACCESS_EVENT,
-    FINGERBOT_BUTTON_EVENT,
-    SET_DISCONNECTED_DELAY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,6 +48,7 @@ class TuyaBLEProductInfo:
     name: str
     manufacturer: str = DEVICE_DEF_MANUFACTURER
     fingerbot: TuyaBLEFingerbotInfo | None = None
+
 
 class TuyaBLEEntity(CoordinatorEntity):
     """Tuya BLE base entity."""
@@ -88,19 +82,16 @@ class TuyaBLEEntity(CoordinatorEntity):
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         self.async_write_ha_state()
-        
+
+
 class TuyaBLECoordinator(DataUpdateCoordinator[None]):
     """Data coordinator for receiving Tuya BLE updates."""
 
     def __init__(self, hass: HomeAssistant, device: TuyaBLEDevice) -> None:
-        """Initialise the coordinator."""
-        super().__init__(
-            hass,
-            _LOGGER,
-            name=DOMAIN,
-        )
+        """Initialize the coordinator."""
+        super().__init__(hass, _LOGGER, name=DOMAIN)
         self._device = device
-        self._disconnected: bool = True
+        self._disconnected = True
         self._unsub_disconnect: CALLBACK_TYPE | None = None
         device.register_connected_callback(self._async_handle_connect)
         device.register_callback(self._async_handle_update)
@@ -108,12 +99,14 @@ class TuyaBLECoordinator(DataUpdateCoordinator[None]):
 
     @property
     def connected(self) -> bool:
+        """Return whether the coordinator currently considers BLE connected."""
         return not self._disconnected
 
     @callback
     def _async_handle_connect(self) -> None:
         if self._unsub_disconnect is not None:
             self._unsub_disconnect()
+            self._unsub_disconnect = None
         if self._disconnected:
             self._disconnected = False
             self.async_update_listeners()
@@ -135,7 +128,7 @@ class TuyaBLECoordinator(DataUpdateCoordinator[None]):
 
     @callback
     def _async_handle_update(self, updates: list[TuyaBLEDataPoint]) -> None:
-        """Just trigger the callbacks."""
+        """Trigger coordinator listeners and local integration events."""
         self._async_handle_connect()
         self.async_set_updated_data(None)
         if self._device.product_id == "z1dfsaya":
@@ -147,11 +140,12 @@ class TuyaBLECoordinator(DataUpdateCoordinator[None]):
                         "unlocked" if bool(update.value) else "locked",
                         update.timestamp,
                     )
+
         info = get_device_product_info(self._device)
         if info and info.fingerbot and info.fingerbot.manual_control != 0:
             for update in updates:
                 if update.id == info.fingerbot.switch and update.changed_by_device:
-                    self.hass.bus.fire(
+                    self.hass.bus.async_fire(
                         FINGERBOT_BUTTON_EVENT,
                         {
                             CONF_ADDRESS: self._device.address,
@@ -161,31 +155,26 @@ class TuyaBLECoordinator(DataUpdateCoordinator[None]):
 
     @callback
     def _set_disconnected(self, _: None) -> None:
-        """Invoke the idle timeout callback, called when the alarm fires."""
+        """Mark the coordinator disconnected after the idle timeout."""
         self._disconnected = True
         self._unsub_disconnect = None
         self.async_update_listeners()
 
     @callback
     def _async_handle_disconnect(self) -> None:
-        """Trigger the callbacks for disconnected."""
+        """Schedule the delayed disconnected state transition."""
         if self._unsub_disconnect is None:
-            delay: float = SET_DISCONNECTED_DELAY
             self._unsub_disconnect = async_call_later(
-                self.hass, delay, self._set_disconnected
+                self.hass, SET_DISCONNECTED_DELAY, self._set_disconnected
             )
 
-    async def _async_update_data(self):
-        """Fetch data from API endpoint.
-
-        This is the place to pre-process the data to lookup tables
-        so entities can quickly look up their data.
-        """
+    async def _async_update_data(self) -> None:
+        """The device pushes updates; coordinator polling is not used."""
 
 
 @dataclass
 class TuyaBLEData:
-    """Data for the Tuya BLE integration."""
+    """Runtime data for the Tuya BLE integration."""
 
     title: str
     device: TuyaBLEDevice
@@ -203,58 +192,34 @@ class TuyaBLECategoryInfo:
 devices_database: dict[str, TuyaBLECategoryInfo] = {
     "co2bj": TuyaBLECategoryInfo(
         products={
-            "59s19z5m": TuyaBLEProductInfo(  # device product_id
-                name="CO2 Detector",
-            ),
+            "59s19z5m": TuyaBLEProductInfo(name="CO2 Detector"),
         },
     ),
     "ldcg": TuyaBLECategoryInfo(
         products={
-            "poaanotz": TuyaBLEProductInfo(  # device product_id
-                name="RV CO And Propane Gas Alarm",
-            ),
+            "poaanotz": TuyaBLEProductInfo(name="RV CO And Propane Gas Alarm"),
         },
     ),
     "ms": TuyaBLECategoryInfo(
         products={
             **dict.fromkeys(
-                [
-                    "ludzroix",
-                    "isk2p555"
-                ],
-                    TuyaBLEProductInfo(  # device product_id
-                    name="Smart Lock",
-                ),
+                ["ludzroix", "isk2p555"],
+                TuyaBLEProductInfo(name="Smart Lock"),
             ),
         },
     ),
     "jtmspro": TuyaBLECategoryInfo(
         products={
-            "z1dfsaya":
-            TuyaBLEProductInfo(
-                name="350K",
-            ),
-            "rlyxv7pe":  # Gimdow device product_id
-            TuyaBLEProductInfo(
-                name="A1 PRO MAX",
-            ),
-            "hc7n0urm":  # Raykube A1 Ultra / A1 Pro Max TuyaOS FD50 lock
-            TuyaBLEProductInfo(
-                name="Raykube A1 Ultra",
-            ),
-            "y2yaegze":  # CTL20H SmartLock - TuyaOS FD50
-            TuyaBLEProductInfo(
-                name="CTL20H SmartLock",
-            ),
-            "ikphogdj":  # HL Knob-2, TuyaOS FD50 transport
-            TuyaBLEProductInfo(
-                name="HL Knob-2",
-            ),
+            "z1dfsaya": TuyaBLEProductInfo(name="350K"),
+            "rlyxv7pe": TuyaBLEProductInfo(name="A1 PRO MAX"),
+            "hc7n0urm": TuyaBLEProductInfo(name="Raykube A1 Ultra"),
+            "y2yaegze": TuyaBLEProductInfo(name="CTL20H SmartLock"),
+            "ikphogdj": TuyaBLEProductInfo(name="HL Knob-2"),
         },
-    ),    
+    ),
     "szjqr": TuyaBLECategoryInfo(
         products={
-            "3yqdo5yt": TuyaBLEProductInfo(  # device product_id
+            "3yqdo5yt": TuyaBLEProductInfo(
                 name="CUBETOUCH 1s",
                 fingerbot=TuyaBLEFingerbotInfo(
                     switch=1,
@@ -265,7 +230,7 @@ devices_database: dict[str, TuyaBLECategoryInfo] = {
                     reverse_positions=4,
                 ),
             ),
-            "xhf790if": TuyaBLEProductInfo(  # device product_id
+            "xhf790if": TuyaBLEProductInfo(
                 name="CubeTouch II",
                 fingerbot=TuyaBLEFingerbotInfo(
                     switch=1,
@@ -277,12 +242,7 @@ devices_database: dict[str, TuyaBLECategoryInfo] = {
                 ),
             ),
             **dict.fromkeys(
-                [
-                    "blliqpsj",
-                    "ndvkgsrm",
-                    "yiihr7zh", 
-                    "neq16kgd"
-                ],  # device product_ids
+                ["blliqpsj", "ndvkgsrm", "yiihr7zh", "neq16kgd"],
                 TuyaBLEProductInfo(
                     name="Fingerbot Plus",
                     fingerbot=TuyaBLEFingerbotInfo(
@@ -306,7 +266,7 @@ devices_database: dict[str, TuyaBLECategoryInfo] = {
                     "bnt7wajf",
                     "rvdceqjh",
                     "5xhbk964",
-                ],  # device product_ids
+                ],
                 TuyaBLEProductInfo(
                     name="Fingerbot",
                     fingerbot=TuyaBLEFingerbotInfo(
@@ -325,40 +285,25 @@ devices_database: dict[str, TuyaBLECategoryInfo] = {
     "wk": TuyaBLECategoryInfo(
         products={
             **dict.fromkeys(
-            [
-            "drlajpqc", 
-            "nhj2j7su",
-            ],  # device product_id
-            TuyaBLEProductInfo(  
-                name="Thermostatic Radiator Valve",
-                ),
+                ["drlajpqc", "nhj2j7su"],
+                TuyaBLEProductInfo(name="Thermostatic Radiator Valve"),
             ),
         },
     ),
     "wsdcg": TuyaBLECategoryInfo(
         products={
-            "ojzlzzsw": TuyaBLEProductInfo(  # device product_id
-                name="Soil moisture sensor",
-            ),
-            "jm6iasmb": TuyaBLEProductInfo(  # device product_id
-                name="Temperature Humidity Sensor",
-            ),
+            "ojzlzzsw": TuyaBLEProductInfo(name="Soil moisture sensor"),
+            "jm6iasmb": TuyaBLEProductInfo(name="Temperature Humidity Sensor"),
         },
     ),
     "znhsb": TuyaBLECategoryInfo(
         products={
-            "cdlandip":  # device product_id
-            TuyaBLEProductInfo(
-                name="Smart water bottle",
-            ),
+            "cdlandip": TuyaBLEProductInfo(name="Smart water bottle"),
         },
     ),
     "ggq": TuyaBLECategoryInfo(
         products={
-            "6pahkcau":  # device product_id
-            TuyaBLEProductInfo(
-                name="Irrigation computer",
-            ),
+            "6pahkcau": TuyaBLEProductInfo(name="Irrigation computer"),
         },
     ),
 }
@@ -368,13 +313,9 @@ def get_product_info_by_ids(
     category: str, product_id: str
 ) -> TuyaBLEProductInfo | None:
     category_info = devices_database.get(category)
-    if category_info is not None:
-        product_info = category_info.products.get(product_id)
-        if product_info is not None:
-            return product_info
-        return category_info.info
-    else:
+    if category_info is None:
         return None
+    return category_info.products.get(product_id) or category_info.info
 
 
 def get_device_product_info(device: TuyaBLEDevice) -> TuyaBLEProductInfo | None:
@@ -401,42 +342,25 @@ async def get_device_readable_name(
             )
     short_address = get_short_address(discovery_info.address)
     if product_info:
-        return "%s %s" % (product_info.name, short_address)
+        return f"{product_info.name} {short_address}"
     if credentials:
-        return "%s %s" % (credentials.device_name, short_address)
-    return "%s %s" % (discovery_info.device.name, short_address)
+        return f"{credentials.device_name} {short_address}"
+    return f"{discovery_info.device.name} {short_address}"
 
 
-def get_device_info(device: TuyaBLEDevice) -> DeviceInfo | None:
+def get_device_info(device: TuyaBLEDevice) -> DeviceInfo:
     product_info = None
     if device.category and device.product_id:
         product_info = get_product_info_by_ids(device.category, device.product_id)
-    product_name: str
-    if product_info:
-        product_name = product_info.name
-    else:
-        product_name = device.name
-    result = DeviceInfo(
+    product_name = product_info.name if product_info else device.name
+    return DeviceInfo(
         connections={(dr.CONNECTION_BLUETOOTH, device.address)},
         hw_version=device.hardware_version,
         identifiers={(DOMAIN, device.address)},
         manufacturer=(
             product_info.manufacturer if product_info else DEVICE_DEF_MANUFACTURER
         ),
-        model=("%s (%s)")
-        % (
-            device.product_model or product_name,
-            device.product_id,
-        ),
-        name=("%s %s")
-        % (
-            product_name,
-            get_short_address(device.address),
-        ),
-        sw_version=("%s (protocol %s)")
-        % (
-            device.device_version,
-            device.protocol_version,
-        ),
+        model=f"{device.product_model or product_name} ({device.product_id})",
+        name=f"{product_name} {get_short_address(device.address)}",
+        sw_version=f"{device.device_version} (protocol {device.protocol_version})",
     )
-    return result
