@@ -16,7 +16,11 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .const import DOMAIN
+from .const import (
+    BUTTON_350K_CLEAR_DIAGNOSTICS,
+    BUTTON_350K_REFRESH_STATUS,
+    DOMAIN,
+)
 from .devices import TuyaBLEData, TuyaBLEEntity, TuyaBLEProductInfo
 from .tuya_ble import TuyaBLEDataPointType, TuyaBLEDevice
 
@@ -29,7 +33,12 @@ TuyaBLEButtonIsAvailable = Callable[["TuyaBLEButton", TuyaBLEProductInfo], bool]
 @dataclass
 class TuyaBLEButtonMapping:
     dp_id: int
-    description: ButtonEntityDescription
+    description: ButtonEntityDescription = field(
+        default_factory=lambda: ButtonEntityDescription(
+            key="push",
+            translation_key="push",
+        )
+    )
     force_add: bool = True
     dp_type: TuyaBLEDataPointType | None = None
     is_available: TuyaBLEButtonIsAvailable = None
@@ -43,25 +52,11 @@ def is_fingerbot_in_push_mode(self: TuyaBLEButton, product: TuyaBLEProductInfo) 
             result = datapoint.value == 0
     return result
 
-@dataclass
-class TuyaBLEFingerbotModeMapping(TuyaBLEButtonMapping):
-    description: ButtonEntityDescription = field(
-        default_factory=lambda: ButtonEntityDescription(
-            key="push",
-            translation_key="push",
-        )
-    )
-    is_available: TuyaBLEButtonIsAvailable = is_fingerbot_in_push_mode
 
 @dataclass
-class TuyaBLEButtonMapping(TuyaBLEButtonMapping):
-    description: ButtonEntityDescription = field(
-        default_factory=lambda: ButtonEntityDescription(
-            key="push",
-            translation_key="push",
-        )
-    )
-    is_available: TuyaBLEButtonIsAvailable = 0
+class TuyaBLEFingerbotModeMapping(TuyaBLEButtonMapping):
+    is_available: TuyaBLEButtonIsAvailable = is_fingerbot_in_push_mode
+
 
 @dataclass
 class TuyaBLECategoryButtonMapping:
@@ -82,8 +77,8 @@ mapping: dict[str, TuyaBLECategoryButtonMapping] = {
                 [
                     "blliqpsj",
                     "ndvkgsrm",
-                    "yiihr7zh", 
-                    "neq16kgd"
+                    "yiihr7zh",
+                    "neq16kgd",
                 ],  # Fingerbot Plus
                 [
                     TuyaBLEFingerbotModeMapping(dp_id=2),
@@ -107,8 +102,7 @@ mapping: dict[str, TuyaBLECategoryButtonMapping] = {
     ),
     "jtmspro": TuyaBLECategoryButtonMapping(
         products={
-            "z1dfsaya":  # Ironzon / YD_350K
-            [
+            "z1dfsaya": [  # Ironzon / YD_350K
                 TuyaBLEButtonMapping(
                     dp_id=46,
                     description=ButtonEntityDescription(
@@ -127,7 +121,7 @@ mapping: dict[str, TuyaBLECategoryButtonMapping] = {
                     ),
                 ),
                 TuyaBLEButtonMapping(
-                    dp_id=-9001,
+                    dp_id=BUTTON_350K_REFRESH_STATUS,
                     description=ButtonEntityDescription(
                         key="refresh_status",
                         translation_key="refresh_status",
@@ -137,7 +131,7 @@ mapping: dict[str, TuyaBLECategoryButtonMapping] = {
                     ),
                 ),
                 TuyaBLEButtonMapping(
-                    dp_id=-9002,
+                    dp_id=BUTTON_350K_CLEAR_DIAGNOSTICS,
                     description=ButtonEntityDescription(
                         key="clear_diagnostics",
                         translation_key="clear_diagnostics",
@@ -151,8 +145,7 @@ mapping: dict[str, TuyaBLECategoryButtonMapping] = {
     ),
     "znhsb": TuyaBLECategoryButtonMapping(
         products={
-            "cdlandip":  # Smart water bottle
-            [
+            "cdlandip": [  # Smart water bottle
                 TuyaBLEButtonMapping(
                     dp_id=109,
                     description=ButtonEntityDescription(
@@ -173,10 +166,8 @@ def get_mapping_by_device(device: TuyaBLEDevice) -> list[TuyaBLECategoryButtonMa
             return product_mapping
         if category.mapping is not None:
             return category.mapping
-        else:
-            return []
-    else:
         return []
+    return []
 
 
 class TuyaBLEButton(TuyaBLEEntity, ButtonEntity):
@@ -199,9 +190,7 @@ class TuyaBLEButton(TuyaBLEEntity, ButtonEntity):
             # DP46 (manual_lock) is a one-shot command, not persistent state.
             # Always send True and leave the local DP cache untouched; DP47 is
             # the authoritative physical lock state.
-            self._hass.create_task(
-                self._device.set_350k_bool_datapoint(46, True)
-            )
+            self._hass.create_task(self._device.set_350k_bool_datapoint(46, True))
             return
 
         if self._device.product_id == "z1dfsaya" and self._mapping.dp_id == 71:
@@ -210,11 +199,17 @@ class TuyaBLEButton(TuyaBLEEntity, ButtonEntity):
             self._hass.create_task(self._device.unlock_350k())
             return
 
-        if self._device.product_id == "z1dfsaya" and self._mapping.dp_id == -9001:
+        if (
+            self._device.product_id == "z1dfsaya"
+            and self._mapping.dp_id == BUTTON_350K_REFRESH_STATUS
+        ):
             self._hass.create_task(self._device.refresh_350k_status())
             return
 
-        if self._device.product_id == "z1dfsaya" and self._mapping.dp_id == -9002:
+        if (
+            self._device.product_id == "z1dfsaya"
+            and self._mapping.dp_id == BUTTON_350K_CLEAR_DIAGNOSTICS
+        ):
             self._device.clear_350k_diagnostics()
             return
 
@@ -231,7 +226,8 @@ class TuyaBLEButton(TuyaBLEEntity, ButtonEntity):
         """Return if entity is available."""
         if (
             self._device.product_id == "z1dfsaya"
-            and self._mapping.dp_id in (-9001, -9002)
+            and self._mapping.dp_id
+            in (BUTTON_350K_REFRESH_STATUS, BUTTON_350K_CLEAR_DIAGNOSTICS)
         ):
             # Refresh must be callable specifically when the lock is asleep;
             # Clear diagnostics is entirely local and never needs BLE.
@@ -247,13 +243,13 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Tuya BLE sensors."""
+    """Set up the Tuya BLE buttons."""
     data: TuyaBLEData = hass.data[DOMAIN][entry.entry_id]
     mappings = get_mapping_by_device(data.device)
     entities: list[TuyaBLEButton] = []
-    for mapping in mappings:
-        if mapping.force_add or data.device.datapoints.has_id(
-            mapping.dp_id, mapping.dp_type
+    for button_mapping in mappings:
+        if button_mapping.force_add or data.device.datapoints.has_id(
+            button_mapping.dp_id, button_mapping.dp_type
         ):
             entities.append(
                 TuyaBLEButton(
@@ -261,7 +257,7 @@ async def async_setup_entry(
                     data.coordinator,
                     data.device,
                     data.product,
-                    mapping,
+                    button_mapping,
                 )
             )
     async_add_entities(entities)
