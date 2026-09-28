@@ -1,0 +1,93 @@
+name: Apply DP46 lock experiment
+
+on:
+  push:
+    branches:
+      - experiment/dp46-lock
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/dp46-lock
+
+      - name: Patch 350K DP46 lock button
+        shell: python
+        run: |
+          from pathlib import Path
+          import json
+          import py_compile
+
+          root = Path("custom_components/tuya_local_ble")
+
+          # 1) Add an experimental one-shot lock button for z1dfsaya.
+          p = root / "button.py"
+          s = p.read_text()
+          anchor = '''    "znhsb": TuyaBLECategoryButtonMapping(\n'''
+          block = '''    "jtmspro": TuyaBLECategoryButtonMapping(\n        products={\n            "z1dfsaya":  # Ironzon / YD_350K\n            [\n                TuyaBLEButtonMapping(\n                    dp_id=46,\n                    description=ButtonEntityDescription(\n                        key="lock_door",\n                        translation_key="lock_door",\n                        icon="mdi:lock",\n                    ),\n                ),\n            ],\n        },\n    ),\n'''
+          if block not in s:
+              if anchor not in s:
+                  raise SystemExit("button.py mapping anchor not found")
+              s = s.replace(anchor, block + anchor, 1)
+
+          old_press = '''    def press(self) -> None:\n        """Press the button."""\n        datapoint = self._device.datapoints.get_or_create(\n            self._mapping.dp_id,\n            TuyaBLEDataPointType.DT_BOOL,\n            False,\n        )\n        if datapoint:\n            self._hass.create_task(datapoint.set_value(not bool(datapoint.value)))\n'''
+          new_press = '''    def press(self) -> None:\n        """Press the button."""\n        if self._device.product_id == "z1dfsaya" and self._mapping.dp_id == 46:\n            # DP46 (manual_lock) is a one-shot command, not persistent state.\n            # Always send True and leave the local DP cache untouched; DP47 is\n            # the authoritative physical lock state.\n            self._hass.create_task(\n                self._device.set_350k_bool_datapoint(46, True)\n            )\n            return\n\n        datapoint = self._device.datapoints.get_or_create(\n            self._mapping.dp_id,\n            TuyaBLEDataPointType.DT_BOOL,\n            False,\n        )\n        if datapoint:\n            self._hass.create_task(datapoint.set_value(not bool(datapoint.value)))\n'''
+          if new_press not in s:
+              if old_press not in s:
+                  raise SystemExit("button.py press anchor not found")
+              s = s.replace(old_press, new_press, 1)
+          p.write_text(s)
+
+          # 2) Permit DP46 through the dedicated 350K V4 boolean-control path.
+          p = root / "tuya_ble" / "tuya_ble.py"
+          s = p.read_text()
+          replacements = [
+              ("# YD_350K configuration writes can take many seconds to acknowledge.",
+               "# YD_350K control writes can take many seconds to acknowledge."),
+              ("# an unbounded queue of stale DP32/DP33 writes behind _operation_lock.",
+               "# an unbounded queue of stale control writes behind _operation_lock."),
+              ('"""Build a YD_350K one-byte boolean V4 configuration write.',
+               '"""Build a YD_350K one-byte boolean V4 control write.'),
+              ("if dp_id not in (33, 79):", "if dp_id not in (33, 46, 79):"),
+              ('"""Write one confirmed YD_350K boolean configuration datapoint.',
+               '"""Write one YD_350K boolean control datapoint.'),
+              ("Only one DP33/DP79 operation is allowed at a time.",
+               "Only one DP33/DP46/DP79 operation is allowed at a time."),
+              ('if self.product_id != "z1dfsaya" or dp_id not in (33, 79):',
+               'if self.product_id != "z1dfsaya" or dp_id not in (33, 46, 79):'),
+          ]
+          for old, new in replacements:
+              if old not in s:
+                  raise SystemExit(f"tuya_ble.py anchor not found: {old}")
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # 3) Add UI translation for the experimental action.
+          for rel in ("strings.json", "translations/en.json"):
+              p = root / rel
+              data = json.loads(p.read_text())
+              data.setdefault("entity", {}).setdefault("button", {})["lock_door"] = {
+                  "name": "Lock door (experimental)"
+              }
+              p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+          # Remove this bootstrap workflow from the resulting experiment commit.
+          Path(".github/workflows/apply-dp46-experiment.yml").unlink()
+
+          py_compile.compile(str(root / "button.py"), doraise=True)
+          py_compile.compile(str(root / "tuya_ble" / "tuya_ble.py"), doraise=True)
+          json.loads((root / "strings.json").read_text())
+          json.loads((root / "translations/en.json").read_text())
+
+      - name: Commit experiment
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add experimental DP46 lock button [skip ci]"
+          git push origin HEAD:experiment/dp46-lock
