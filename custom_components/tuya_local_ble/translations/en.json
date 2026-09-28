@@ -248,6 +248,9 @@
       },
       "last_actuation_latency": {
         "name": "Last lock actuation latency"
+      },
+      "unknown_dp_recorder": {
+        "name": "Unknown DP recorder"
       }
     },
     "switch": {

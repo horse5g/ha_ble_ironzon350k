@@ -59,6 +59,7 @@ from .const import (
     DP_350K_LAST_COMMAND_RESULT,
     DP_350K_LAST_COMMAND_DURATION_MS,
     DP_350K_LAST_ACTUATION_LATENCY_MS,
+    DP_350K_UNKNOWN_DP_COUNT,
 )
 from .devices import TuyaBLEData, TuyaBLEEntity, TuyaBLEProductInfo
 from .tuya_ble import TuyaBLEDataPointType, TuyaBLEDevice
@@ -138,6 +139,20 @@ def diagnostic_timestamp_getter(self: TuyaBLESensor) -> None:
         self._attr_native_value = datetime.fromtimestamp(
             int(datapoint.value), tz=timezone.utc
         )
+
+
+def unknown_dp_recorder_getter(self: TuyaBLESensor) -> None:
+    """Expose sanitized session-local unknown-DP metadata."""
+    snapshot = self._device.unknown_dp_diagnostics
+    self._attr_native_value = int(snapshot["unique_count"])
+    self._attr_extra_state_attributes = {
+        "overflow_count": snapshot["overflow_count"],
+        "session_only": snapshot["session_only"],
+        "raw_string_bitmap_contents_stored": snapshot[
+            "raw_string_bitmap_contents_stored"
+        ],
+        "records": snapshot["records"],
+    }
 
 
 @dataclass
@@ -404,6 +419,16 @@ mapping: dict[str, TuyaBLECategorySensorMapping] = {
                         key="last_actuation_latency",
                         icon="mdi:lock-clock",
                         native_unit_of_measurement="ms",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_UNKNOWN_DP_COUNT,
+                    getter=unknown_dp_recorder_getter,
+                    description=SensorEntityDescription(
+                        key="unknown_dp_recorder",
+                        icon="mdi:radar",
                         entity_category=EntityCategory.DIAGNOSTIC,
                         entity_registry_enabled_default=False,
                     ),

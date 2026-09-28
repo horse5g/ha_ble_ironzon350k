@@ -40,6 +40,7 @@ from ..const import (
     DP_350K_LAST_COMMAND_RESULT,
     DP_350K_LAST_COMMAND_DURATION_MS,
     DP_350K_LAST_ACTUATION_LATENCY_MS,
+    DP_350K_UNKNOWN_DP_COUNT,
     PROTOCOL_LOG_EVENTS,
     PROTOCOL_LOG_LEVELS,
     PROTOCOL_LOG_OFF,
@@ -71,6 +72,25 @@ _LOGGER = logging.getLogger(__name__)
 
 
 BLEAK_EXCEPTIONS = (*BLEAK_RETRY_EXCEPTIONS, OSError)
+
+# Datapoints whose 350K receive-side meaning is sufficiently understood that
+# they already have dedicated parsing/entities. Everything else is eligible
+# for the sanitized discovery recorder below.
+_350K_INTERPRETED_DPS = frozenset({
+    8,   # battery
+    12,  # fingerprint credential id
+    13,  # PIN credential id
+    19,  # BLE/app unlock event
+    20,  # raw lock history record (already exposed separately)
+    21,  # credential failure/alarm
+    28,  # language
+    31,  # beep volume
+    32,  # secure-lock reported state
+    33,  # passage mode
+    46,  # manual lock command/status
+    47,  # physical lock state
+    79,  # secure-lock control
+})
 
 
 class TuyaBLEDataPoint:
@@ -313,6 +333,12 @@ class TuyaBLEDevice:
         # Track a recent experimental unlock command only long enough to
         # correlate the authoritative DP47=True motor-state report.
         self._350k_unlock_requested_monotonic: float | None = None
+        # Session-local, sanitized discovery data for not-yet-understood DPs.
+        # Raw/string/bitmap contents are never stored here. Lists and record
+        # counts are bounded so a noisy/unknown firmware cannot grow memory or
+        # Home Assistant state attributes without limit.
+        self._350k_unknown_dps: dict[int, dict[str, object]] = {}
+        self._350k_unknown_dp_overflow = 0
         # Session-local diagnostics. These intentionally reset when the HA
         # config entry reloads; they describe the current integration runtime.
         self._350k_seen_connected_once = False
@@ -334,6 +360,14 @@ class TuyaBLEDevice:
     async def initialize(self) -> None:
         _LOGGER.debug("%s: Initializing", self.address)
         if await self._update_device_info():
+            if self.product_id == "z1dfsaya":
+                self._datapoints._update_from_device(
+                    DP_350K_UNKNOWN_DP_COUNT,
+                    time.time(),
+                    0,
+                    TuyaBLEDataPointType.DT_VALUE,
+                    0,
+                )
             self._decode_advertisement_data()
             
     def _build_pairing_request(self) -> bytes:
@@ -806,6 +840,125 @@ class TuyaBLEDevice:
             current = asyncio.current_task()
             if self._350k_keepalive_task is current:
                 self._350k_keepalive_task = None
+
+    @property
+    def unknown_dp_diagnostics(self) -> dict[str, object]:
+        """Return a JSON-safe, sanitized snapshot of unknown 350K DPs."""
+        records: list[dict[str, object]] = []
+        for dp_id in sorted(self._350k_unknown_dps):
+            record = self._350k_unknown_dps[dp_id]
+            records.append({
+                "dp": dp_id,
+                "types": list(record["types"]),
+                "lengths": list(record["lengths"]),
+                "count": int(record["count"]),
+                "ordinary_count": int(record["ordinary_count"]),
+                "timed_count": int(record["timed_count"]),
+                "first_seen": int(record["first_seen"]),
+                "last_seen": int(record["last_seen"]),
+                "last_sequence": int(record["last_sequence"]),
+                "scalar_values": list(record["scalar_values"]),
+                "payload_redacted": bool(record["payload_redacted"]),
+            })
+        return {
+            "unique_count": len(records),
+            "overflow_count": self._350k_unknown_dp_overflow,
+            "records": records,
+            "session_only": True,
+            "raw_string_bitmap_contents_stored": False,
+        }
+
+    def _record_350k_unknown_dp(
+        self,
+        dp_id: int,
+        dp_type: TuyaBLEDataPointType,
+        raw_value: bytes,
+        value: bytes | bool | int | str,
+        *,
+        timed: bool,
+        timestamp: int | float,
+        event_seq: int,
+    ) -> TuyaBLEDataPoint | None:
+        """Record bounded metadata for an uninterpreted 350K datapoint.
+
+        This deliberately does not retain RAW, BITMAP, or STRING contents.
+        BOOL/ENUM/VALUE scalars are useful for reverse engineering and are
+        retained in a small bounded unique-value list.
+        """
+        if self.product_id != "z1dfsaya" or dp_id in _350K_INTERPRETED_DPS:
+            return None
+
+        record = self._350k_unknown_dps.get(dp_id)
+        if record is None:
+            if len(self._350k_unknown_dps) >= 32:
+                self._350k_unknown_dp_overflow += 1
+                return None
+            record = {
+                "types": [],
+                "lengths": [],
+                "count": 0,
+                "ordinary_count": 0,
+                "timed_count": 0,
+                "first_seen": int(timestamp),
+                "last_seen": int(timestamp),
+                "last_sequence": int(event_seq),
+                "scalar_values": [],
+                "payload_redacted": False,
+            }
+            self._350k_unknown_dps[dp_id] = record
+
+        types = record["types"]
+        type_name = dp_type.name
+        if type_name not in types and len(types) < 4:
+            types.append(type_name)
+
+        lengths = record["lengths"]
+        raw_len = len(raw_value)
+        if raw_len not in lengths and len(lengths) < 8:
+            lengths.append(raw_len)
+            lengths.sort()
+
+        record["count"] = int(record["count"]) + 1
+        counter_key = "timed_count" if timed else "ordinary_count"
+        record[counter_key] = int(record[counter_key]) + 1
+        record["last_seen"] = int(timestamp)
+        record["last_sequence"] = int(event_seq)
+
+        scalar: bool | int | None = None
+        if dp_type == TuyaBLEDataPointType.DT_BOOL:
+            scalar = bool(value)
+        elif dp_type in (TuyaBLEDataPointType.DT_ENUM, TuyaBLEDataPointType.DT_VALUE):
+            scalar = int(value)
+        else:
+            # RAW/BITMAP/STRING content may contain credential material or
+            # other user data. Keep only its type/length/timing metadata.
+            record["payload_redacted"] = True
+
+        if scalar is not None:
+            values = record["scalar_values"]
+            if scalar not in values and len(values) < 8:
+                values.append(scalar)
+
+        self._log_350k_event(
+            "%s: 350K sanitized unknown DP dp=%s type=%s len=%s timed=%s "
+            "scalar=%r payload_redacted=%s",
+            self.address,
+            dp_id,
+            type_name,
+            raw_len,
+            timed,
+            scalar,
+            bool(record["payload_redacted"]),
+        )
+
+        self._datapoints._update_from_device(
+            DP_350K_UNKNOWN_DP_COUNT,
+            time.time(),
+            0,
+            TuyaBLEDataPointType.DT_VALUE,
+            len(self._350k_unknown_dps),
+        )
+        return self._datapoints[DP_350K_UNKNOWN_DP_COUNT]
 
     def get_or_create_datapoint(
         self,
@@ -2080,6 +2233,18 @@ class TuyaBLEDevice:
             except (UnicodeDecodeError, ValueError):
                 value = raw_value
 
+            unknown_summary_dp = self._record_350k_unknown_dp(
+                dp_id,
+                dp_type,
+                raw_value,
+                value,
+                timed=True,
+                timestamp=timestamp,
+                event_seq=event_seq,
+            )
+            if unknown_summary_dp is not None:
+                datapoints.append(unknown_summary_dp)
+
             trailing = data[next_pos:]
             self._log_350k_event(
                 "%s: 350K timed event seq=0x%010x kind=0x%02x "
@@ -2211,6 +2376,18 @@ class TuyaBLEDevice:
             value = decode_value(dp_type, raw_value)
         except (UnicodeDecodeError, ValueError):
             value = raw_value
+
+        unknown_summary_dp = self._record_350k_unknown_dp(
+            dp_id,
+            dp_type,
+            raw_value,
+            value,
+            timed=False,
+            timestamp=time.time(),
+            event_seq=event_seq,
+        )
+        if unknown_summary_dp is not None:
+            datapoints.append(unknown_summary_dp)
 
         if dp_id == 19 and dp_type == TuyaBLEDataPointType.DT_VALUE:
             # Some firmware may report BLE/app unlock as an ordinary

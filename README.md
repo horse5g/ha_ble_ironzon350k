@@ -112,6 +112,44 @@ The experimental branch also provides disabled-by-default local diagnostic senso
 
 Sequence gaps are intentionally conservative: small forward jumps are counted as potentially missed reports, while large discontinuities are treated as reboot/reset/reordering and logged without inflating the gap counter. Lock/unlock actuation latency starts after the protocol ACK and stops only when authoritative DP47 reaches the requested physical state.
 
+## Sanitized unknown-DP recorder
+
+A disabled-by-default diagnostic sensor named **Unknown DP recorder** records session-local metadata for 350K datapoints that are not yet positively interpreted by this project. It is intended for safe exploratory testing while exercising the lock later.
+
+The sensor state is the number of distinct unknown DPs observed in the current Home Assistant integration session. Its attributes contain a bounded record for each DP with:
+
+- DP number and observed Tuya type(s),
+- payload length(s),
+- total / ordinary / timed occurrence counts,
+- first/last-seen epoch timestamps and last V4 event sequence,
+- up to eight distinct scalar values for BOOL / ENUM / VALUE datapoints,
+- a `payload_redacted` flag.
+
+RAW, BITMAP, and STRING contents are **never retained by this recorder**; only their type, length, timing, and count metadata are kept. The recorder stores at most 32 distinct DPs and eight lengths/scalars per DP. Additional distinct DPs increment `overflow_count` rather than growing attributes indefinitely. Data resets when the integration reloads or Home Assistant restarts.
+
+This recorder is independent of Raw protocol logging. For routine discovery, leave protocol logging at **Parsed events** (or Off) and enable only the **Unknown DP recorder** entity. Existing Raw logging can still contain decrypted protocol content and should continue to be treated as sensitive.
+
+An example sanitized record may look like:
+
+```yaml
+state: 3
+records:
+  - dp: 6
+    types: [DT_VALUE]
+    lengths: [4]
+    count: 2
+    ordinary_count: 0
+    timed_count: 2
+    scalar_values: [1]
+    payload_redacted: false
+  - dp: 61
+    types: [DT_RAW]
+    lengths: [19]
+    count: 1
+    scalar_values: []
+    payload_redacted: true
+```
+
 ## Suggested test sequence
 
 For reproducible testing, set protocol logging to **Parsed events** first. Raw mode is normally unnecessary.
