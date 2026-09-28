@@ -1,0 +1,46 @@
+name: Materialize initial core source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.bootstrap/tuya_ble.part0.b64'
+      - '.bootstrap/tuya_ble.part1.b64'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Materialize exact source snapshot
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64
+          import pathlib
+          import zlib
+
+          root = pathlib.Path('.')
+          payload = (
+              (root / '.bootstrap/tuya_ble.part0.b64').read_text().strip()
+              + (root / '.bootstrap/tuya_ble.part1.b64').read_text().strip()
+          )
+          data = zlib.decompress(base64.b64decode(payload))
+          out = root / 'custom_components/tuya_local_ble/tuya_ble/tuya_ble.py'
+          out.parent.mkdir(parents=True, exist_ok=True)
+          out.write_bytes(data)
+          print(f'wrote {len(data)} bytes to {out}')
+          PY
+          python -m py_compile custom_components/tuya_local_ble/tuya_ble/tuya_ble.py
+      - name: Commit materialized source
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add custom_components/tuya_local_ble/tuya_ble/tuya_ble.py
+          git rm -f .bootstrap/tuya_ble.part0.b64 .bootstrap/tuya_ble.part1.b64 .github/workflows/materialize-core.yml
+          git commit -m 'Materialize 350K core source [skip ci]'
+          git push

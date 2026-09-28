@@ -1,1 +1,0 @@
-Temporary repository assembly in progress; this file will be removed in the baseline commit.
