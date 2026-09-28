@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import probatio
+import voluptuous as vol
 
 from homeassistant.components.device_automation import DEVICE_TRIGGER_BASE_SCHEMA
 from homeassistant.components.homeassistant.triggers import event as event_trigger
@@ -23,9 +24,17 @@ TRIGGER_TYPES = {
     "unlocked",
 }
 
-TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
-    {probatio.Required(CONF_TYPE): probatio.In(TRIGGER_TYPES)}
-)
+# HA 2026.9 still exposes the device trigger base schema as voluptuous while
+# 2026.10+ migrated it to probatio. Build the extension with the matching
+# marker types so this custom integration can straddle both API generations.
+if isinstance(DEVICE_TRIGGER_BASE_SCHEMA, vol.Schema):
+    TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
+        {vol.Required(CONF_TYPE): vol.In(TRIGGER_TYPES)}
+    )
+else:
+    TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
+        {probatio.Required(CONF_TYPE): probatio.In(TRIGGER_TYPES)}
+    )
 
 
 def _is_350k_device(hass: HomeAssistant, device_id: str) -> bool:
@@ -46,6 +55,7 @@ def _is_350k_device(hass: HomeAssistant, device_id: str) -> bool:
 async def async_get_triggers(
     hass: HomeAssistant, device_id: str
 ) -> list[dict[str, str]]:
+    """Return 350K device triggers for a Home Assistant device."""
     if not _is_350k_device(hass, device_id):
         return []
     base = {
@@ -62,6 +72,7 @@ async def async_attach_trigger(
     action: TriggerActionType,
     trigger_info: TriggerInfo,
 ) -> CALLBACK_TYPE:
+    """Attach a 350K device trigger to the integration event bus event."""
     event_config = event_trigger.TRIGGER_SCHEMA(
         {
             event_trigger.CONF_PLATFORM: "event",
