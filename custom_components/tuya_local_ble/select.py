@@ -106,6 +106,25 @@ mapping: dict[str, TuyaBLECategorySelectMapping] = {
     ),
     "jtmspro": TuyaBLECategorySelectMapping(
         products={
+            "z1dfsaya":  # Ironzon / YD_350K
+            [
+                TuyaBLESelectMapping(
+                    dp_id=31,
+                    description=SelectEntityDescription(
+                        key="beep_volume",
+                        options=["mute", "low", "normal", "high"],
+                        entity_category=EntityCategory.CONFIG,
+                    ),
+                ),
+                TuyaBLESelectMapping(
+                    dp_id=28,
+                    description=SelectEntityDescription(
+                        key="language",
+                        options=["chinese_simplified", "english"],
+                        entity_category=EntityCategory.CONFIG,
+                    ),
+                ),
+            ],
             "rlyxv7pe":  # Smart Lock
             [
                 TuyaBLESelectMapping(
@@ -342,6 +361,8 @@ class TuyaBLESelect(TuyaBLEEntity, SelectEntity):
             return self._mapping.dp_id in (31, 48)
         if self._device.product_id == "ikphogdj":
             return self._mapping.dp_id in (31, 48)
+        if self._device.product_id == "z1dfsaya":
+            return self._mapping.dp_id in (28, 31)
         return False
 
     def _option_from_datapoint(self) -> str | None:
@@ -380,6 +401,17 @@ class TuyaBLESelect(TuyaBLEEntity, SelectEntity):
         if option not in self._attr_options:
             return
         int_value = self._attr_options.index(option)
+        if (
+            self._device.product_id == "z1dfsaya"
+            and self._mapping.dp_id in (28, 31)
+        ):
+            sent = await self._device.set_350k_enum_datapoint(
+                self._mapping.dp_id, int_value
+            )
+            if sent:
+                self._sticky_option = option
+            self.async_write_ha_state()
+            return
         datapoint = self._device.datapoints.get_or_create(
             self._mapping.dp_id,
             TuyaBLEDataPointType.DT_ENUM,

@@ -66,6 +66,23 @@ class TuyaBLECategoryLockMapping:
 mapping: dict[str, TuyaBLECategoryLockMapping] = {
     "jtmspro": TuyaBLECategoryLockMapping(
         products={
+            "z1dfsaya":  # Ironzon / YD_350K experimental lock entity
+            [
+                TuyaBLELockMapping(
+                    dp_id_unlock=71,
+                    dp_id_lock=46,
+                    dp_id=47,
+                    dp_id_nop=0,
+                    keep_connect=False,
+                    keep_connect_timer=120,
+                    value_means_locked=False,
+                    description=LockEntityDescription(
+                        key="experimental_lock",
+                        translation_key="experimental_lock",
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+            ],
             "rlyxv7pe":  # Gimdow Smart Lock
             [
                 TuyaBLELockMapping(
@@ -192,6 +209,8 @@ class TuyaBLELock(TuyaBLEEntity, LockEntity):
         self._isjammed = False
         self._keep_connect_stop = Event()
         self._keep_connect_thread: Thread | None = None
+        # DP47 is often already present from the setup-time status read.
+        self.update_device_state()
         self._update_attrs()
         if mapping.keep_connect:
             self._datapoint_nop = device.datapoints.get_or_create(
@@ -272,6 +291,25 @@ class TuyaBLELock(TuyaBLEEntity, LockEntity):
         self._target_state = state
         self._update_attrs()
         self.async_write_ha_state()
+
+        if self._device.product_id == "z1dfsaya":
+            # 350K commands are one-shot authenticated operations. Never
+            # mutate DP47 optimistically; wait for the lock to report it.
+            self._commanded = True
+            self._commanded_timer = datetime.now()
+            self._update_attrs()
+            self.async_write_ha_state()
+            if self._target_state == LockState.UNLOCKED:
+                sent = await self._device.unlock_350k()
+            else:
+                sent = await self._device.set_350k_bool_datapoint(46, True)
+            if not sent:
+                self._commanded = False
+                self._target_state = None
+                self._isjammed = False
+                self._update_attrs()
+                self.async_write_ha_state()
+            return
 
         if self._target_state == LockState.UNLOCKED:
             dp_id = self._mapping.dp_id_unlock
@@ -362,7 +400,7 @@ class TuyaBLELock(TuyaBLEEntity, LockEntity):
         """Return if entity is available."""
         if self._device.product_id in ("hc7n0urm", "y2yaegze"):
             return True
-        if self._device.product_id == "ikphogdj":
+        if self._device.product_id in ("ikphogdj", "z1dfsaya"):
             return True
         result = super().available
         if result and self._mapping.is_available:

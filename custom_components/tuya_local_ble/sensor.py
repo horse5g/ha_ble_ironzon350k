@@ -46,6 +46,10 @@ from .const import (
     DP_350K_LAST_ACCESS_EVENT_TIME,
     DP_350K_LAST_CREDENTIAL_ID,
     DP_350K_LAST_LOCK_RECORD,
+    DP_350K_LAST_ACK_LATENCY_MS,
+    DP_350K_LAST_GATT_WRITE_COUNT,
+    DP_350K_LAST_GATT_WRITE_BYTES,
+    DP_350K_WRITE_CHUNK_SIZE,
 )
 from .devices import TuyaBLEData, TuyaBLEEntity, TuyaBLEProductInfo
 from .tuya_ble import TuyaBLEDataPointType, TuyaBLEDevice
@@ -256,6 +260,45 @@ mapping: dict[str, TuyaBLECategorySensorMapping] = {
                     description=SensorEntityDescription(
                         key="last_lock_record",
                         icon="mdi:code-braces",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_LAST_ACK_LATENCY_MS,
+                    description=SensorEntityDescription(
+                        key="last_tx_ack_latency",
+                        icon="mdi:timer-outline",
+                        native_unit_of_measurement="ms",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_LAST_GATT_WRITE_COUNT,
+                    description=SensorEntityDescription(
+                        key="last_gatt_write_count",
+                        icon="mdi:counter",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_LAST_GATT_WRITE_BYTES,
+                    description=SensorEntityDescription(
+                        key="last_gatt_write_bytes",
+                        icon="mdi:code-greater-than",
+                        native_unit_of_measurement="B",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_WRITE_CHUNK_SIZE,
+                    description=SensorEntityDescription(
+                        key="gatt_write_chunk_size",
+                        icon="mdi:bluetooth-transfer",
+                        native_unit_of_measurement="B",
                         entity_category=EntityCategory.DIAGNOSTIC,
                         entity_registry_enabled_default=False,
                     ),

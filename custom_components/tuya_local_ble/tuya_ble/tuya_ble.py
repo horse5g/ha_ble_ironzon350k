@@ -27,6 +27,10 @@ from ..const import (
     DP_350K_LAST_ACCESS_EVENT_TIME,
     DP_350K_LAST_CREDENTIAL_ID,
     DP_350K_LAST_LOCK_RECORD,
+    DP_350K_LAST_ACK_LATENCY_MS,
+    DP_350K_LAST_GATT_WRITE_COUNT,
+    DP_350K_LAST_GATT_WRITE_BYTES,
+    DP_350K_WRITE_CHUNK_SIZE,
     PROTOCOL_LOG_EVENTS,
     PROTOCOL_LOG_LEVELS,
     PROTOCOL_LOG_OFF,
@@ -1221,6 +1225,67 @@ class TuyaBLEDevice:
                 )
                 return False
 
+    def _build_350k_v4_enum_data(self, dp_id: int, value: int) -> bytes:
+        """Build a one-byte YD_350K V4 enum configuration write."""
+        if dp_id not in (28, 31) or not 0 <= int(value) <= 0xFF:
+            raise TuyaBLEDeviceError(0)
+        return (
+            b"\x00\x00\x00\x00\x01"
+            + bytes([dp_id, int(TuyaBLEDataPointType.DT_ENUM.value)])
+            + b"\x00\x01"
+            + bytes([int(value)])
+        )
+
+    async def set_350k_enum_datapoint(self, dp_id: int, value: int) -> bool:
+        """Write DP28 language or DP31 volume without optimistic state."""
+        if self.product_id != "z1dfsaya" or dp_id not in (28, 31):
+            raise TuyaBLEDeviceError(0)
+        if self._350k_control_lock.locked():
+            _LOGGER.warning(
+                "%s: Ignoring 350K DP%s=%s; another control operation is pending",
+                self.address, dp_id, value,
+            )
+            return False
+        async with self._350k_control_lock:
+            payload = self._build_350k_v4_enum_data(dp_id, value)
+            _LOGGER.debug(
+                "%s: Sending 350K enum update, id: %s, value: %s",
+                self.address, dp_id, value,
+            )
+            self._log_350k_raw(
+                "%s: 350K raw FUN_SENDER_DPS_V4 enum plaintext: %s",
+                self.address, payload.hex(),
+            )
+            try:
+                await self._ensure_connected()
+                if (
+                    self._expected_disconnect
+                    or self._client is None
+                    or not self._client.is_connected
+                ):
+                    return False
+                result = await self._send_packet_while_connected(
+                    TuyaBLECode.FUN_SENDER_DPS_V4, payload, 0, True
+                )
+                if not result:
+                    _LOGGER.warning(
+                        "%s: 350K DP%s=%s was not acknowledged",
+                        self.address, dp_id, value,
+                    )
+                return result
+            except BLEAK_EXCEPTIONS:
+                _LOGGER.warning(
+                    "%s: 350K DP%s=%s enum write failed due to BLE error",
+                    self.address, dp_id, value, exc_info=True,
+                )
+                return False
+            except Exception:
+                _LOGGER.exception(
+                    "%s: Unexpected error writing 350K enum DP%s=%s",
+                    self.address, dp_id, value,
+                )
+                return False
+
     async def unlock_350k(self) -> bool:
         """Send the experimental YD_350K BLE unlock command.
 
@@ -1424,6 +1489,19 @@ class TuyaBLEDevice:
                 [len(packet) for packet in packets],
                 sum(len(packet) for packet in packets),
             )
+            if response_to == 0:
+                now = time.time()
+                diag_updates: list[TuyaBLEDataPoint] = []
+                for dp_id, diag_value in (
+                    (DP_350K_LAST_GATT_WRITE_COUNT, len(packets)),
+                    (DP_350K_LAST_GATT_WRITE_BYTES, max((len(p) for p in packets), default=0)),
+                    (DP_350K_WRITE_CHUNK_SIZE, self._get_350k_write_chunk_mtu()),
+                ):
+                    self._datapoints._update_from_device(
+                        dp_id, now, 0, TuyaBLEDataPointType.DT_VALUE, int(diag_value)
+                    )
+                    diag_updates.append(self._datapoints[dp_id])
+                self._fire_callbacks(diag_updates)
         await self._int_send_packet_while_connected(packets)
         if future:
             wait_started = time.monotonic()
@@ -1437,14 +1515,26 @@ class TuyaBLEDevice:
                 )
                 result = False
             if self.product_id == "z1dfsaya":
+                latency_ms = (time.monotonic() - wait_started) * 1000.0
                 self._log_350k_event(
                     "%s: 350K response code=%s seq=%s acknowledged=%s latency_ms=%.1f",
                     self.address,
                     code.name,
                     seq_num,
                     result,
-                    (time.monotonic() - wait_started) * 1000.0,
+                    latency_ms,
                 )
+                if response_to == 0:
+                    self._datapoints._update_from_device(
+                        DP_350K_LAST_ACK_LATENCY_MS,
+                        time.time(),
+                        0,
+                        TuyaBLEDataPointType.DT_VALUE,
+                        int(round(latency_ms)),
+                    )
+                    self._fire_callbacks(
+                        [self._datapoints[DP_350K_LAST_ACK_LATENCY_MS]]
+                    )
             self._input_expected_responses.pop(seq_num, None)
 
         return result
@@ -1867,6 +1957,9 @@ class TuyaBLEDevice:
             elif dp_id == 13 and dp_type == TuyaBLEDataPointType.DT_VALUE:
                 access_event = "pin_unlock"
                 credential_id = int(value)
+            elif dp_id == 19 and dp_type == TuyaBLEDataPointType.DT_VALUE:
+                access_event = "bluetooth_unlock"
+                credential_id = int(value)
             elif dp_id == 21 and dp_type == TuyaBLEDataPointType.DT_ENUM:
                 access_event = {
                     0: "failed_fingerprint",
@@ -1953,6 +2046,21 @@ class TuyaBLEDevice:
             value = decode_value(dp_type, raw_value)
         except (UnicodeDecodeError, ValueError):
             value = raw_value
+
+        if dp_id == 19 and dp_type == TuyaBLEDataPointType.DT_VALUE:
+            # Some firmware may report BLE/app unlock as an ordinary
+            # delta rather than a timed record. Mirror it into the same
+            # local access-event sensors using the receive time.
+            event_time = int(time.time())
+            for synthetic_id, synthetic_type, synthetic_value in (
+                (DP_350K_LAST_ACCESS_EVENT, TuyaBLEDataPointType.DT_STRING, "bluetooth_unlock"),
+                (DP_350K_LAST_ACCESS_EVENT_TIME, TuyaBLEDataPointType.DT_VALUE, event_time),
+                (DP_350K_LAST_CREDENTIAL_ID, TuyaBLEDataPointType.DT_VALUE, int(value)),
+            ):
+                self._datapoints._update_from_device(
+                    synthetic_id, float(event_time), kind, synthetic_type, synthetic_value
+                )
+                datapoints.append(self._datapoints[synthetic_id])
 
         if dp_id == 47 and dp_type == TuyaBLEDataPointType.DT_BOOL:
             unlock_started = self._350k_unlock_requested_monotonic

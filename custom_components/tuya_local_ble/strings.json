@@ -20,13 +20,13 @@
     "step": {
       "init": {
         "title": "Tuya BLE options",
-        "description": "Integration options. Keep connected controls persistent BLE behavior; 350K protocol logging controls local diagnostic detail without changing Home Assistant's global logger level.",
+        "description": "Integration options. Keep BLE connection alive controls connection maintenance; 350K protocol logging controls local diagnostic detail without changing Home Assistant's global logger level.",
         "data": {
-          "keep_connected": "Keep connected (24/7)",
+          "keep_connected": "Keep BLE connection alive",
           "protocol_log_level": "350K protocol logging"
         },
         "data_description": {
-          "keep_connected": "When enabled, maintain a persistent BLE session with periodic keepalive (like Gimdow). When disabled, connect on demand and use advertisement refresh. Prefer ESPHome BLE proxies if enabling this.",
+          "keep_connected": "For the 350K, periodically keep an existing authenticated BLE session warm without forcing a sleeping lock to connect. Other supported battery locks may use this option for their persistent-connection behavior.",
           "protocol_log_level": "Off: no extra 350K diagnostics. Parsed events: decoded datapoints and timed events. Raw frames + events: also include encrypted BLE fragments and decrypted Tuya V4 payloads. Raw mode may contain credential IDs or other lock event data, so use it only while troubleshooting."
         }
       }
@@ -96,10 +96,23 @@
         }
       },
       "beep_volume": {
-        "name": "Lock Volume"
+        "name": "Lock volume",
+        "state": {
+          "mute": "Mute",
+          "low": "Low",
+          "normal": "Normal",
+          "high": "High"
+        }
       },
       "lock_direction": {
         "name": "Lock Direction"
+      },
+      "language": {
+        "name": "Lock language",
+        "state": {
+          "chinese_simplified": "Simplified Chinese",
+          "english": "English"
+        }
       }
     },
     "binary_sensor": {
@@ -196,6 +209,18 @@
       },
       "last_lock_record": {
         "name": "Last lock record"
+      },
+      "last_tx_ack_latency": {
+        "name": "Last TX ACK latency"
+      },
+      "last_gatt_write_count": {
+        "name": "Last GATT write count"
+      },
+      "last_gatt_write_bytes": {
+        "name": "Largest last GATT write"
+      },
+      "gatt_write_chunk_size": {
+        "name": "GATT write chunk size"
       }
     },
     "switch": {
@@ -255,14 +280,14 @@
       },
       "secure_lock_control": {
         "name": "Secure lock (temporary)"
-      },
-      "keep_ble_connection_alive": {
-        "name": "Keep BLE connection alive"
       }
     },
     "lock": {
       "manual_lock": {
         "name": "Lock Control"
+      },
+      "experimental_lock": {
+        "name": "350K lock (experimental)"
       }
     },
     "text": {

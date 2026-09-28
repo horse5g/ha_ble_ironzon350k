@@ -17,6 +17,7 @@ from .tuya_ble import TuyaBLEDevice
 
 from .keyman import HASSTuyaBLEDeviceManager
 from .const import (
+    CONF_KEEP_CONNECTED,
     CONF_PROTOCOL_LOG_LEVEL,
     DOMAIN,
     PROTOCOL_LOG_OFF,
@@ -53,6 +54,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if device.product_id == "z1dfsaya":
         device.set_protocol_log_level(
             str(entry.options.get(CONF_PROTOCOL_LOG_LEVEL, PROTOCOL_LOG_OFF))
+        )
+        # Keepalive is an integration option rather than a lock entity.
+        # The 350K implementation only keeps an already-authenticated
+        # session warm; it never wakes/connects the lock by itself.
+        device.set_keepalive_enabled(
+            bool(entry.options.get(CONF_KEEP_CONNECTED, False))
         )
     product_info = get_device_product_info(device)
 

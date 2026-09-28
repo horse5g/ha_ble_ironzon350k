@@ -11,12 +11,10 @@ from homeassistant.components.switch import (
     SwitchEntity,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_ON
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
 from .devices import TuyaBLEData, TuyaBLEEntity, TuyaBLEProductInfo
@@ -552,55 +550,6 @@ class TuyaBLESwitch(TuyaBLEEntity, SwitchEntity):
         return result
 
 
-
-class TuyaBLEKeepAliveSwitch(TuyaBLEEntity, SwitchEntity, RestoreEntity):
-    """Local-only switch keeping the YD_350K authenticated BLE session warm."""
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        coordinator: DataUpdateCoordinator,
-        device: TuyaBLEDevice,
-        product: TuyaBLEProductInfo,
-    ) -> None:
-        super().__init__(
-            hass,
-            coordinator,
-            device,
-            product,
-            SwitchEntityDescription(
-                key="keep_ble_connection_alive",
-                icon="mdi:bluetooth-connect",
-                entity_category=EntityCategory.CONFIG,
-            ),
-        )
-
-    @property
-    def is_on(self) -> bool:
-        return self._device.keepalive_enabled
-
-    @property
-    def available(self) -> bool:
-        # Local integration setting; it can be toggled even while the lock is
-        # temporarily unreachable. The device task only acts on an existing
-        # authenticated connection and never forces a new connection itself.
-        return True
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        last_state = await self.async_get_last_state()
-        if last_state is not None:
-            self._device.set_keepalive_enabled(last_state.state == STATE_ON)
-
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        self._device.set_keepalive_enabled(True)
-        self.async_write_ha_state()
-
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        self._device.set_keepalive_enabled(False)
-        self.async_write_ha_state()
-
-
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -610,18 +559,6 @@ async def async_setup_entry(
     data: TuyaBLEData = hass.data[DOMAIN][entry.entry_id]
     mappings = get_mapping_by_device(data.device)
     entities: list[SwitchEntity] = []
-    if data.device.product_id == "z1dfsaya":
-        entities.extend(
-            [
-                TuyaBLEKeepAliveSwitch(
-                    hass,
-                    data.coordinator,
-                    data.device,
-                    data.product,
-                ),
-            ]
-        )
-
     for mapping in mappings:
         if mapping.force_add or data.device.datapoints.has_id(
             mapping.dp_id, mapping.dp_type
