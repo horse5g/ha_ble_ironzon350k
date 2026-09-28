@@ -1,0 +1,83 @@
+name: Polish 350K test harness availability
+
+on:
+  push:
+    branches:
+      - experiment/dp46-lock
+    paths:
+      - .github/workflows/fix-350k-test-harness-polish.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/dp46-lock
+          fetch-depth: 0
+
+      - name: Apply small runtime polish
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('custom_components/tuya_local_ble/button.py')
+          s = p.read_text()
+          old = '''    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        result = super().available
+'''
+          new = '''    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        if (
+            self._device.product_id == "z1dfsaya"
+            and self._mapping.dp_id in (-9001, -9002)
+        ):
+            # Refresh must be callable specifically when the lock is asleep;
+            # Clear diagnostics is entirely local and never needs BLE.
+            return True
+        result = super().available
+'''
+          if 'self._mapping.dp_id in (-9001, -9002)' not in s:
+              assert s.count(old) == 1
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path('custom_components/tuya_local_ble/sensor.py')
+          s = p.read_text()
+          old = '''        return self._mapping.dp_id in (
+            DP_350K_STATE_AGE_SECONDS,
+            DP_350K_LAST_RX_AGE_SECONDS,
+        )
+'''
+          new = '''        return self._mapping.dp_id in (
+            DP_350K_STATE_AGE_SECONDS,
+            DP_350K_LAST_RX_AGE_SECONDS,
+            DP_350K_SESSION_STATE,
+        )
+'''
+          if 'DP_350K_SESSION_STATE,\n        )' not in s[s.find('def should_poll'):s.find('async def async_update')]:
+              assert s.count(old) == 1
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+
+      - name: Validate
+        run: |
+          python -m py_compile custom_components/tuya_local_ble/*.py custom_components/tuya_local_ble/tuya_ble/*.py
+          python -m unittest discover -s tests -p 'test_350k_*.py' -v
+          git diff --check
+
+      - name: Commit and remove bootstrap workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/workflows/fix-350k-test-harness-polish.yml
+          git add custom_components .github || true
+          git commit -m 'Polish 350K harness availability diagnostics'
+          git push origin HEAD:experiment/dp46-lock
