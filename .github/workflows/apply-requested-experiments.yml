@@ -1,0 +1,44 @@
+name: Apply requested 350K experimental features
+
+on:
+  push:
+    branches:
+      - experiment/dp46-lock
+    paths:
+      - .github/workflows/apply-requested-experiments.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/dp46-lock
+
+      - name: Apply feature patch
+        shell: bash
+        run: |
+          base64 -d tools/_requested_experiments_patch.py.gz.b64 | gzip -d > /tmp/apply_requested_experiments.py
+          python /tmp/apply_requested_experiments.py
+
+      - name: Validate source
+        shell: bash
+        run: |
+          python -m py_compile custom_components/tuya_local_ble/*.py custom_components/tuya_local_ble/tuya_ble/*.py
+          python -m json.tool custom_components/tuya_local_ble/strings.json >/dev/null
+          python -m json.tool custom_components/tuya_local_ble/translations/en.json >/dev/null
+          git diff --check
+
+      - name: Commit feature update and remove bootstrap files
+        shell: bash
+        run: |
+          rm -f tools/_requested_experiments_patch.py.gz.b64
+          rm -f .github/workflows/apply-requested-experiments.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add 350K experimental lock and diagnostics"
+          git push origin HEAD:experiment/dp46-lock
