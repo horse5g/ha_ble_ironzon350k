@@ -100,6 +100,18 @@ Enable these from the device's entity list when testing:
 
 The experimental lock entity does not optimistically change DP47. Lock/unlock state remains based on the value physically reported by the lock.
 
+## Session and command diagnostics
+
+The experimental branch also provides disabled-by-default local diagnostic sensors for:
+
+- BLE reconnect count (session-local; resets when the config entry reloads).
+- BLE connected-since and last-disconnect timestamps.
+- Last observed 40-bit V4 event sequence and cumulative small sequence gaps.
+- Last high-level 350K command, command result, and total duration including on-demand reconnect time.
+- ACK latency, GATT write count/size, negotiated write chunk size, and ACK-to-DP47 motor actuation latency.
+
+Sequence gaps are intentionally conservative: small forward jumps are counted as potentially missed reports, while large discontinuities are treated as reboot/reset/reordering and logged without inflating the gap counter. Lock/unlock actuation latency starts after the protocol ACK and stops only when authoritative DP47 reaches the requested physical state.
+
 ## Suggested test sequence
 
 For reproducible testing, set protocol logging to **Parsed events** first. Raw mode is normally unnecessary.

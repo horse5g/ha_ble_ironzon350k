@@ -221,6 +221,33 @@
       },
       "gatt_write_chunk_size": {
         "name": "GATT write chunk size"
+      },
+      "ble_reconnect_count": {
+        "name": "BLE reconnect count"
+      },
+      "ble_connected_since": {
+        "name": "BLE connected since"
+      },
+      "last_ble_disconnect": {
+        "name": "Last BLE disconnect"
+      },
+      "last_v4_event_sequence": {
+        "name": "Last V4 event sequence"
+      },
+      "v4_sequence_gaps": {
+        "name": "V4 sequence gaps"
+      },
+      "last_command": {
+        "name": "Last command"
+      },
+      "last_command_result": {
+        "name": "Last command result"
+      },
+      "last_command_duration": {
+        "name": "Last command duration"
+      },
+      "last_actuation_latency": {
+        "name": "Last lock actuation latency"
       }
     },
     "switch": {

@@ -50,6 +50,15 @@ from .const import (
     DP_350K_LAST_GATT_WRITE_COUNT,
     DP_350K_LAST_GATT_WRITE_BYTES,
     DP_350K_WRITE_CHUNK_SIZE,
+    DP_350K_RECONNECT_COUNT,
+    DP_350K_CONNECTED_SINCE,
+    DP_350K_LAST_DISCONNECT_TIME,
+    DP_350K_LAST_EVENT_SEQUENCE,
+    DP_350K_EVENT_SEQUENCE_GAPS,
+    DP_350K_LAST_COMMAND,
+    DP_350K_LAST_COMMAND_RESULT,
+    DP_350K_LAST_COMMAND_DURATION_MS,
+    DP_350K_LAST_ACTUATION_LATENCY_MS,
 )
 from .devices import TuyaBLEData, TuyaBLEEntity, TuyaBLEProductInfo
 from .tuya_ble import TuyaBLEDataPointType, TuyaBLEDevice
@@ -116,6 +125,15 @@ def battery_enum_getter(self: TuyaBLESensor) -> None:
 def last_access_event_time_getter(self: TuyaBLESensor) -> None:
     """Expose the 350K event epoch as a Home Assistant timestamp."""
     datapoint = self._device.datapoints[DP_350K_LAST_ACCESS_EVENT_TIME]
+    if datapoint:
+        self._attr_native_value = datetime.fromtimestamp(
+            int(datapoint.value), tz=timezone.utc
+        )
+
+
+def diagnostic_timestamp_getter(self: TuyaBLESensor) -> None:
+    """Expose a synthetic epoch datapoint as a Home Assistant timestamp."""
+    datapoint = self._device.datapoints[self._mapping.dp_id]
     if datapoint:
         self._attr_native_value = datetime.fromtimestamp(
             int(datapoint.value), tz=timezone.utc
@@ -299,6 +317,93 @@ mapping: dict[str, TuyaBLECategorySensorMapping] = {
                         key="gatt_write_chunk_size",
                         icon="mdi:bluetooth-transfer",
                         native_unit_of_measurement="B",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_RECONNECT_COUNT,
+                    description=SensorEntityDescription(
+                        key="ble_reconnect_count",
+                        icon="mdi:connection",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_CONNECTED_SINCE,
+                    getter=diagnostic_timestamp_getter,
+                    description=SensorEntityDescription(
+                        key="ble_connected_since",
+                        device_class=SensorDeviceClass.TIMESTAMP,
+                        icon="mdi:bluetooth-connect",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_LAST_DISCONNECT_TIME,
+                    getter=diagnostic_timestamp_getter,
+                    description=SensorEntityDescription(
+                        key="last_ble_disconnect",
+                        device_class=SensorDeviceClass.TIMESTAMP,
+                        icon="mdi:bluetooth-off",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_LAST_EVENT_SEQUENCE,
+                    description=SensorEntityDescription(
+                        key="last_v4_event_sequence",
+                        icon="mdi:numeric",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_EVENT_SEQUENCE_GAPS,
+                    description=SensorEntityDescription(
+                        key="v4_sequence_gaps",
+                        icon="mdi:alert-decagram-outline",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_LAST_COMMAND,
+                    description=SensorEntityDescription(
+                        key="last_command",
+                        icon="mdi:gesture-tap-button",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_LAST_COMMAND_RESULT,
+                    description=SensorEntityDescription(
+                        key="last_command_result",
+                        icon="mdi:check-network-outline",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_LAST_COMMAND_DURATION_MS,
+                    description=SensorEntityDescription(
+                        key="last_command_duration",
+                        icon="mdi:timer-sand",
+                        native_unit_of_measurement="ms",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_LAST_ACTUATION_LATENCY_MS,
+                    description=SensorEntityDescription(
+                        key="last_actuation_latency",
+                        icon="mdi:lock-clock",
+                        native_unit_of_measurement="ms",
                         entity_category=EntityCategory.DIAGNOSTIC,
                         entity_registry_enabled_default=False,
                     ),

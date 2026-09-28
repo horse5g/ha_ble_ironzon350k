@@ -31,6 +31,15 @@ from ..const import (
     DP_350K_LAST_GATT_WRITE_COUNT,
     DP_350K_LAST_GATT_WRITE_BYTES,
     DP_350K_WRITE_CHUNK_SIZE,
+    DP_350K_RECONNECT_COUNT,
+    DP_350K_CONNECTED_SINCE,
+    DP_350K_LAST_DISCONNECT_TIME,
+    DP_350K_LAST_EVENT_SEQUENCE,
+    DP_350K_EVENT_SEQUENCE_GAPS,
+    DP_350K_LAST_COMMAND,
+    DP_350K_LAST_COMMAND_RESULT,
+    DP_350K_LAST_COMMAND_DURATION_MS,
+    DP_350K_LAST_ACTUATION_LATENCY_MS,
     PROTOCOL_LOG_EVENTS,
     PROTOCOL_LOG_LEVELS,
     PROTOCOL_LOG_OFF,
@@ -304,6 +313,16 @@ class TuyaBLEDevice:
         # Track a recent experimental unlock command only long enough to
         # correlate the authoritative DP47=True motor-state report.
         self._350k_unlock_requested_monotonic: float | None = None
+        # Session-local diagnostics. These intentionally reset when the HA
+        # config entry reloads; they describe the current integration runtime.
+        self._350k_seen_connected_once = False
+        self._350k_reconnect_count = 0
+        self._350k_last_event_seq: int | None = None
+        self._350k_event_sequence_gaps = 0
+        # Correlate acknowledged lock/unlock commands with authoritative DP47.
+        self._350k_actuation_started_monotonic: float | None = None
+        self._350k_actuation_expected_state: bool | None = None
+        self._350k_actuation_command: str | None = None
 
     def set_ble_device_and_advertisement_data(
         self, ble_device: BLEDevice, advertisement_data: AdvertisementData
@@ -550,6 +569,138 @@ class TuyaBLEDevice:
         ):
             _LOGGER.info(message, *args)
 
+    def _publish_350k_diagnostics(
+        self,
+        values: list[tuple[int, TuyaBLEDataPointType, bytes | bool | int | str]],
+        *,
+        timestamp: float | None = None,
+        fire: bool = True,
+    ) -> None:
+        """Update synthetic 350K diagnostics without touching real Tuya DPs."""
+        if self.product_id != "z1dfsaya":
+            return
+        now = time.time() if timestamp is None else timestamp
+        updates: list[TuyaBLEDataPoint] = []
+        for dp_id, dp_type, value in values:
+            self._datapoints._update_from_device(dp_id, now, 0, dp_type, value)
+            updates.append(self._datapoints[dp_id])
+        # Do not fire while disconnected: TuyaBLECoordinator treats any DP
+        # callback as evidence of an active connection. Silent values become
+        # visible on the next real update/reconnect instead.
+        if (
+            fire
+            and updates
+            and self._client is not None
+            and self._client.is_connected
+        ):
+            self._fire_callbacks(updates)
+
+    def _finish_350k_command(
+        self, command: str, result: str, started_monotonic: float
+    ) -> None:
+        """Publish total command duration, including any on-demand reconnect."""
+        duration_ms = max(
+            0,
+            int(round((time.monotonic() - started_monotonic) * 1000.0)),
+        )
+        self._publish_350k_diagnostics(
+            [
+                (DP_350K_LAST_COMMAND, TuyaBLEDataPointType.DT_STRING, command),
+                (DP_350K_LAST_COMMAND_RESULT, TuyaBLEDataPointType.DT_STRING, result),
+                (
+                    DP_350K_LAST_COMMAND_DURATION_MS,
+                    TuyaBLEDataPointType.DT_VALUE,
+                    duration_ms,
+                ),
+            ]
+        )
+        self._log_350k_event(
+            "%s: 350K command=%s result=%s total_duration_ms=%s",
+            self.address,
+            command,
+            result,
+            duration_ms,
+        )
+
+    def _arm_350k_actuation(self, command: str, expected_unlocked: bool) -> None:
+        """Start ACK-to-DP47 motor timing for a confirmed command ACK."""
+        self._350k_actuation_command = command
+        self._350k_actuation_expected_state = expected_unlocked
+        self._350k_actuation_started_monotonic = time.monotonic()
+
+    def _record_350k_connected(self) -> None:
+        """Record a newly authenticated 350K BLE session."""
+        if self.product_id != "z1dfsaya":
+            return
+        if self._350k_seen_connected_once:
+            self._350k_reconnect_count += 1
+        else:
+            self._350k_seen_connected_once = True
+        now = time.time()
+        self._publish_350k_diagnostics(
+            [
+                (
+                    DP_350K_CONNECTED_SINCE,
+                    TuyaBLEDataPointType.DT_VALUE,
+                    int(now),
+                ),
+                (
+                    DP_350K_RECONNECT_COUNT,
+                    TuyaBLEDataPointType.DT_VALUE,
+                    self._350k_reconnect_count,
+                ),
+            ],
+            timestamp=now,
+        )
+
+    def _record_350k_event_sequence(
+        self, event_seq: int, datapoints: list[TuyaBLEDataPoint]
+    ) -> None:
+        """Track the 40-bit report sequence and small forward gaps.
+
+        A gap can indicate reports generated while HA was disconnected or a
+        transport loss. Large jumps are treated as a lock reboot/reset rather
+        than adding an absurd number of missing reports.
+        """
+        mask = (1 << 40) - 1
+        previous = self._350k_last_event_seq
+        if previous is not None:
+            expected = (previous + 1) & mask
+            forward = (event_seq - expected) & mask
+            if 0 < forward <= 1000:
+                self._350k_event_sequence_gaps += forward
+                self._log_350k_event(
+                    "%s: 350K V4 sequence gap previous=0x%010x current=0x%010x "
+                    "missing=%s total_missing=%s",
+                    self.address,
+                    previous,
+                    event_seq,
+                    forward,
+                    self._350k_event_sequence_gaps,
+                )
+            elif forward > 1000 and event_seq != expected:
+                self._log_350k_event(
+                    "%s: 350K V4 sequence discontinuity previous=0x%010x "
+                    "current=0x%010x (reset/reorder; not counted)",
+                    self.address,
+                    previous,
+                    event_seq,
+                )
+        self._350k_last_event_seq = event_seq
+        now = time.time()
+        for dp_id, value in (
+            (DP_350K_LAST_EVENT_SEQUENCE, event_seq),
+            (DP_350K_EVENT_SEQUENCE_GAPS, self._350k_event_sequence_gaps),
+        ):
+            self._datapoints._update_from_device(
+                dp_id,
+                now,
+                0,
+                TuyaBLEDataPointType.DT_VALUE,
+                int(value),
+            )
+            datapoints.append(self._datapoints[dp_id])
+
     @property
     def keepalive_enabled(self) -> bool:
         """Return whether the local 350K BLE connection keeper is enabled."""
@@ -727,6 +878,22 @@ class TuyaBLEDevice:
     def _disconnected(self, client: BleakClientWithServiceCache) -> None:
         """Disconnected callback."""
         self._350k_unlock_requested_monotonic = None
+        if self.product_id == "z1dfsaya":
+            now = time.time()
+            self._publish_350k_diagnostics(
+                [
+                    (
+                        DP_350K_LAST_DISCONNECT_TIME,
+                        TuyaBLEDataPointType.DT_VALUE,
+                        int(now),
+                    )
+                ],
+                timestamp=now,
+                fire=False,
+            )
+            self._350k_actuation_started_monotonic = None
+            self._350k_actuation_expected_state = None
+            self._350k_actuation_command = None
         was_paired = self._is_paired
         self._is_paired = False
         self._fire_disconnected_callbacks()
@@ -932,6 +1099,7 @@ class TuyaBLEDevice:
             if self._client.is_connected:
                 if self._is_paired:
                     _LOGGER.debug("%s: Successfully connected", self.address)
+                    self._record_350k_connected()
                     self._fire_connected_callbacks()
                     self._ensure_350k_keepalive_task()
                 else:
@@ -1141,16 +1309,9 @@ class TuyaBLEDevice:
         )
 
     async def set_350k_bool_datapoint(self, dp_id: int, value: bool) -> bool:
-        """Write one YD_350K boolean control datapoint.
-
-        Only one DP33/DP46/DP79 operation is allowed at a time.  Extra UI clicks
-        while an operation is pending are ignored instead of queued.  The
-        local datapoint cache is left untouched until the peripheral reports
-        its new state through the normal notification parser.
-        """
+        """Write one YD_350K boolean control datapoint."""
         if self.product_id != "z1dfsaya" or dp_id not in (33, 46, 79):
             raise TuyaBLEDeviceError(0)
-
         if self._350k_control_lock.locked():
             _LOGGER.warning(
                 "%s: Ignoring 350K DP%s=%s; another control operation is still pending",
@@ -1160,6 +1321,12 @@ class TuyaBLEDevice:
             )
             return False
 
+        command = {
+            33: "passage_on" if value else "passage_off",
+            46: "lock" if value else "manual_lock_false",
+            79: "secure_on" if value else "secure_off",
+        }[dp_id]
+        started = time.monotonic()
         async with self._350k_control_lock:
             payload = self._build_350k_v4_bool_data(dp_id, value)
             _LOGGER.debug(
@@ -1180,13 +1347,8 @@ class TuyaBLEDevice:
                     or self._client is None
                     or not self._client.is_connected
                 ):
-                    _LOGGER.warning(
-                        "%s: 350K DP%s write aborted; device is not connected",
-                        self.address,
-                        dp_id,
-                    )
+                    self._finish_350k_command(command, "not_connected", started)
                     return False
-
                 result = await self._send_packet_while_connected(
                     TuyaBLECode.FUN_SENDER_DPS_V4,
                     payload,
@@ -1194,20 +1356,16 @@ class TuyaBLEDevice:
                     True,
                 )
                 if not result:
-                    _LOGGER.warning(
-                        "%s: 350K DP%s=%s was not acknowledged",
-                        self.address,
-                        dp_id,
-                        value,
+                    self._finish_350k_command(
+                        command, "not_acknowledged", started
                     )
                     return False
-
-                # The device normally pushes the resulting DP state
-                # immediately after the command ACK. Do not hold the HA service
-                # call open for an arbitrary linger delay; the notification
-                # parser will update the entity asynchronously.
+                self._finish_350k_command(command, "acknowledged", started)
+                if dp_id == 46 and value:
+                    self._arm_350k_actuation("lock", expected_unlocked=False)
                 return True
             except BLEAK_EXCEPTIONS:
+                self._finish_350k_command(command, "ble_error", started)
                 _LOGGER.warning(
                     "%s: 350K DP%s=%s write failed due to BLE communication error",
                     self.address,
@@ -1217,6 +1375,7 @@ class TuyaBLEDevice:
                 )
                 return False
             except Exception:
+                self._finish_350k_command(command, "error", started)
                 _LOGGER.exception(
                     "%s: Unexpected error writing 350K DP%s=%s",
                     self.address,
@@ -1243,18 +1402,25 @@ class TuyaBLEDevice:
         if self._350k_control_lock.locked():
             _LOGGER.warning(
                 "%s: Ignoring 350K DP%s=%s; another control operation is pending",
-                self.address, dp_id, value,
+                self.address,
+                dp_id,
+                value,
             )
             return False
+        command = "language" if dp_id == 28 else "volume"
+        started = time.monotonic()
         async with self._350k_control_lock:
             payload = self._build_350k_v4_enum_data(dp_id, value)
             _LOGGER.debug(
                 "%s: Sending 350K enum update, id: %s, value: %s",
-                self.address, dp_id, value,
+                self.address,
+                dp_id,
+                value,
             )
             self._log_350k_raw(
                 "%s: 350K raw FUN_SENDER_DPS_V4 enum plaintext: %s",
-                self.address, payload.hex(),
+                self.address,
+                payload.hex(),
             )
             try:
                 await self._ensure_connected()
@@ -1263,42 +1429,47 @@ class TuyaBLEDevice:
                     or self._client is None
                     or not self._client.is_connected
                 ):
+                    self._finish_350k_command(command, "not_connected", started)
                     return False
                 result = await self._send_packet_while_connected(
-                    TuyaBLECode.FUN_SENDER_DPS_V4, payload, 0, True
+                    TuyaBLECode.FUN_SENDER_DPS_V4,
+                    payload,
+                    0,
+                    True,
                 )
-                if not result:
-                    _LOGGER.warning(
-                        "%s: 350K DP%s=%s was not acknowledged",
-                        self.address, dp_id, value,
-                    )
+                self._finish_350k_command(
+                    command,
+                    "acknowledged" if result else "not_acknowledged",
+                    started,
+                )
                 return result
             except BLEAK_EXCEPTIONS:
+                self._finish_350k_command(command, "ble_error", started)
                 _LOGGER.warning(
                     "%s: 350K DP%s=%s enum write failed due to BLE error",
-                    self.address, dp_id, value, exc_info=True,
+                    self.address,
+                    dp_id,
+                    value,
+                    exc_info=True,
                 )
                 return False
             except Exception:
+                self._finish_350k_command(command, "error", started)
                 _LOGGER.exception(
                     "%s: Unexpected error writing 350K enum DP%s=%s",
-                    self.address, dp_id, value,
+                    self.address,
+                    dp_id,
+                    value,
                 )
                 return False
 
     async def unlock_350k(self) -> bool:
-        """Send the experimental YD_350K BLE unlock command.
-
-        The command uses the same 28-byte DP71/0x47 V4 unlock-check payload
-        format already implemented for related TuyaOS FD50 locks. The previous
-        Smart Life capture strongly matches this framing by encrypted GATT write
-        length, but the 350K path remains experimental until physically tested.
+        """Send the experimental YD_350K DP71 BLE unlock command.
 
         No lock state is changed optimistically. DP47 remains authoritative.
         """
         if self.product_id != "z1dfsaya":
             raise TuyaBLEDeviceError(0)
-
         if self._350k_control_lock.locked():
             _LOGGER.warning(
                 "%s: Ignoring 350K unlock; another control operation is still pending",
@@ -1306,10 +1477,13 @@ class TuyaBLEDevice:
             )
             return False
 
+        command = "unlock"
+        started = time.monotonic()
         async with self._350k_control_lock:
             try:
                 payload = self._build_raykube_unlock_v4_data()
             except Exception:
+                self._finish_350k_command(command, "unavailable", started)
                 _LOGGER.warning(
                     "%s: 350K unlock unavailable; ble_unlock_check is missing or invalid",
                     self.address,
@@ -1320,15 +1494,12 @@ class TuyaBLEDevice:
                 "%s: Sending experimental 350K DP71 unlock command",
                 self.address,
             )
-            # Never log the decrypted DP71 authorization body. Even Raw mode
-            # only records safe framing metadata for an unlock attempt.
             self._log_350k_raw(
                 "%s: 350K experimental DP71 unlock metadata: "
                 "plaintext_len=%s authorization_body=<redacted>",
                 self.address,
                 len(payload),
             )
-
             try:
                 await self._ensure_connected()
                 if (
@@ -1336,14 +1507,8 @@ class TuyaBLEDevice:
                     or self._client is None
                     or not self._client.is_connected
                 ):
-                    _LOGGER.warning(
-                        "%s: 350K DP71 unlock aborted; device is not connected",
-                        self.address,
-                    )
+                    self._finish_350k_command(command, "not_connected", started)
                     return False
-
-                unlock_started = time.monotonic()
-                self._350k_unlock_requested_monotonic = unlock_started
                 result = await self._send_packet_while_connected(
                     TuyaBLECode.FUN_SENDER_DPS_V4,
                     payload,
@@ -1351,19 +1516,17 @@ class TuyaBLEDevice:
                     True,
                 )
                 if not result:
-                    if self._350k_unlock_requested_monotonic == unlock_started:
-                        self._350k_unlock_requested_monotonic = None
-                    _LOGGER.warning(
-                        "%s: 350K DP71 unlock was not acknowledged",
-                        self.address,
+                    self._finish_350k_command(
+                        command, "not_acknowledged", started
                     )
                     return False
-
-                # A protocol ACK only confirms receipt. The motor/door state is
-                # still determined exclusively by the later DP47 notification.
+                self._finish_350k_command(command, "acknowledged", started)
+                self._350k_unlock_requested_monotonic = time.monotonic()
+                self._arm_350k_actuation("unlock", expected_unlocked=True)
                 return True
             except BLEAK_EXCEPTIONS:
                 self._350k_unlock_requested_monotonic = None
+                self._finish_350k_command(command, "ble_error", started)
                 _LOGGER.warning(
                     "%s: 350K DP71 unlock failed due to BLE communication error",
                     self.address,
@@ -1372,6 +1535,7 @@ class TuyaBLEDevice:
                 return False
             except Exception:
                 self._350k_unlock_requested_monotonic = None
+                self._finish_350k_command(command, "error", started)
                 _LOGGER.exception(
                     "%s: Unexpected error sending experimental 350K DP71 unlock",
                     self.address,
@@ -1862,6 +2026,7 @@ class TuyaBLEDevice:
         event_seq = int.from_bytes(data[0:5], "big")
         frame_marker = data[5]
         kind = data[6]
+        self._record_350k_event_sequence(event_seq, datapoints)
 
         if timed:
             # 00 <kind> 01 <timestamp:4> <dp> <type> <len:2> <value>
@@ -2063,18 +2228,37 @@ class TuyaBLEDevice:
                 datapoints.append(self._datapoints[synthetic_id])
 
         if dp_id == 47 and dp_type == TuyaBLEDataPointType.DT_BOOL:
-            unlock_started = self._350k_unlock_requested_monotonic
-            if unlock_started is not None:
-                elapsed = time.monotonic() - unlock_started
+            started = self._350k_actuation_started_monotonic
+            expected_state = self._350k_actuation_expected_state
+            if started is not None and expected_state is not None:
+                elapsed = time.monotonic() - started
                 if elapsed > 15.0:
-                    self._350k_unlock_requested_monotonic = None
-                elif bool(value):
+                    self._350k_actuation_started_monotonic = None
+                    self._350k_actuation_expected_state = None
+                    self._350k_actuation_command = None
+                elif bool(value) == expected_state:
+                    latency_ms = max(0, int(round(elapsed * 1000.0)))
+                    command = self._350k_actuation_command or "lock_state_change"
                     self._log_350k_event(
-                        "%s: 350K experimental unlock confirmed by DP47=True "
-                        "after %.1f ms",
+                        "%s: 350K %s confirmed by DP47=%s after %s ms from ACK",
                         self.address,
-                        elapsed * 1000.0,
+                        command,
+                        value,
+                        latency_ms,
                     )
+                    self._datapoints._update_from_device(
+                        DP_350K_LAST_ACTUATION_LATENCY_MS,
+                        time.time(),
+                        0,
+                        TuyaBLEDataPointType.DT_VALUE,
+                        latency_ms,
+                    )
+                    datapoints.append(
+                        self._datapoints[DP_350K_LAST_ACTUATION_LATENCY_MS]
+                    )
+                    self._350k_actuation_started_monotonic = None
+                    self._350k_actuation_expected_state = None
+                    self._350k_actuation_command = None
                     self._350k_unlock_requested_monotonic = None
 
         trailing = data[next_pos:]
