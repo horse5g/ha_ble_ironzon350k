@@ -41,6 +41,7 @@ from ..const import (
     DP_350K_LAST_COMMAND_DURATION_MS,
     DP_350K_LAST_ACTUATION_LATENCY_MS,
     DP_350K_UNKNOWN_DP_COUNT,
+    DP_350K_EVENT_TIMELINE_COUNT,
     PROTOCOL_LOG_EVENTS,
     PROTOCOL_LOG_LEVELS,
     PROTOCOL_LOG_OFF,
@@ -76,6 +77,11 @@ BLEAK_EXCEPTIONS = (*BLEAK_RETRY_EXCEPTIONS, OSError)
 # Datapoints whose 350K receive-side meaning is sufficiently understood that
 # they already have dedicated parsing/entities. Everything else is eligible
 # for the sanitized discovery recorder below.
+_350K_EVENT_TIMELINE_CAPACITY = 25
+# Credential/user identifiers are useful elsewhere in dedicated diagnostics,
+# but the generic timeline deliberately redacts them so it is safer to share.
+_350K_TIMELINE_SENSITIVE_SCALAR_DPS = frozenset({12, 13, 19})
+
 _350K_INTERPRETED_DPS = frozenset({
     8,   # battery
     12,  # fingerprint credential id
@@ -339,6 +345,9 @@ class TuyaBLEDevice:
         # Home Assistant state attributes without limit.
         self._350k_unknown_dps: dict[int, dict[str, object]] = {}
         self._350k_unknown_dp_overflow = 0
+        # Bounded, session-local ordering of decoded 350K reports. The timeline
+        # never keeps raw/string/bitmap payload contents or credential IDs.
+        self._350k_event_timeline: list[dict[str, object]] = []
         # Session-local diagnostics. These intentionally reset when the HA
         # config entry reloads; they describe the current integration runtime.
         self._350k_seen_connected_once = False
@@ -361,9 +370,17 @@ class TuyaBLEDevice:
         _LOGGER.debug("%s: Initializing", self.address)
         if await self._update_device_info():
             if self.product_id == "z1dfsaya":
+                now = time.time()
                 self._datapoints._update_from_device(
                     DP_350K_UNKNOWN_DP_COUNT,
-                    time.time(),
+                    now,
+                    0,
+                    TuyaBLEDataPointType.DT_VALUE,
+                    0,
+                )
+                self._datapoints._update_from_device(
+                    DP_350K_EVENT_TIMELINE_COUNT,
+                    now,
                     0,
                     TuyaBLEDataPointType.DT_VALUE,
                     0,
@@ -867,6 +884,77 @@ class TuyaBLEDevice:
             "session_only": True,
             "raw_string_bitmap_contents_stored": False,
         }
+
+    @property
+    def event_timeline_diagnostics(self) -> dict[str, object]:
+        """Return a JSON-safe snapshot of the recent sanitized 350K timeline."""
+        return {
+            "count": len(self._350k_event_timeline),
+            "capacity": _350K_EVENT_TIMELINE_CAPACITY,
+            "session_only": True,
+            "raw_string_bitmap_contents_stored": False,
+            "credential_scalar_dps_redacted": sorted(
+                _350K_TIMELINE_SENSITIVE_SCALAR_DPS
+            ),
+            "events": [dict(event) for event in self._350k_event_timeline],
+        }
+
+    def _record_350k_event_timeline(
+        self,
+        dp_id: int,
+        dp_type: TuyaBLEDataPointType,
+        raw_value: bytes,
+        value: bytes | bool | int | str,
+        *,
+        timed: bool,
+        timestamp: int | float,
+        event_seq: int,
+        kind: int,
+    ) -> TuyaBLEDataPoint | None:
+        """Record one decoded 350K event without retaining sensitive payloads."""
+        if self.product_id != "z1dfsaya":
+            return None
+
+        payload_redacted = False
+        scalar: bool | int | None = None
+        if dp_type == TuyaBLEDataPointType.DT_BOOL:
+            scalar = bool(value)
+        elif dp_type in (TuyaBLEDataPointType.DT_ENUM, TuyaBLEDataPointType.DT_VALUE):
+            if dp_id in _350K_TIMELINE_SENSITIVE_SCALAR_DPS:
+                payload_redacted = True
+            else:
+                scalar = int(value)
+        else:
+            payload_redacted = True
+
+        entry: dict[str, object] = {
+            "timestamp": int(timestamp),
+            "sequence": int(event_seq),
+            "kind": int(kind),
+            "dp": int(dp_id),
+            "type": dp_type.name,
+            "length": len(raw_value),
+            "source": "timed" if timed else "ordinary",
+            "interpreted": dp_id in _350K_INTERPRETED_DPS,
+            "payload_redacted": payload_redacted,
+        }
+        if scalar is not None:
+            entry["scalar"] = scalar
+
+        self._350k_event_timeline.append(entry)
+        if len(self._350k_event_timeline) > _350K_EVENT_TIMELINE_CAPACITY:
+            del self._350k_event_timeline[
+                : len(self._350k_event_timeline) - _350K_EVENT_TIMELINE_CAPACITY
+            ]
+
+        self._datapoints._update_from_device(
+            DP_350K_EVENT_TIMELINE_COUNT,
+            time.time(),
+            0,
+            TuyaBLEDataPointType.DT_VALUE,
+            len(self._350k_event_timeline),
+        )
+        return self._datapoints[DP_350K_EVENT_TIMELINE_COUNT]
 
     def _record_350k_unknown_dp(
         self,
@@ -2233,6 +2321,19 @@ class TuyaBLEDevice:
             except (UnicodeDecodeError, ValueError):
                 value = raw_value
 
+            timeline_dp = self._record_350k_event_timeline(
+                dp_id,
+                dp_type,
+                raw_value,
+                value,
+                timed=True,
+                timestamp=timestamp,
+                event_seq=event_seq,
+                kind=kind,
+            )
+            if timeline_dp is not None:
+                datapoints.append(timeline_dp)
+
             unknown_summary_dp = self._record_350k_unknown_dp(
                 dp_id,
                 dp_type,
@@ -2377,13 +2478,27 @@ class TuyaBLEDevice:
         except (UnicodeDecodeError, ValueError):
             value = raw_value
 
+        event_timestamp = time.time()
+        timeline_dp = self._record_350k_event_timeline(
+            dp_id,
+            dp_type,
+            raw_value,
+            value,
+            timed=False,
+            timestamp=event_timestamp,
+            event_seq=event_seq,
+            kind=kind,
+        )
+        if timeline_dp is not None:
+            datapoints.append(timeline_dp)
+
         unknown_summary_dp = self._record_350k_unknown_dp(
             dp_id,
             dp_type,
             raw_value,
             value,
             timed=False,
-            timestamp=time.time(),
+            timestamp=event_timestamp,
             event_seq=event_seq,
         )
         if unknown_summary_dp is not None:

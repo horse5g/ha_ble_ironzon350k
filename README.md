@@ -150,6 +150,17 @@ records:
     payload_redacted: true
 ```
 
+
+## Sanitized event timeline
+
+A second disabled-by-default diagnostic sensor, **Sanitized event timeline**, keeps the most recent 25 decoded 350K V4 datapoint reports in order. This makes later correlation tests possible without requiring Raw protocol logging or a new HCI capture for every experiment.
+
+Each entry stores only bounded metadata: timestamp, rolling 40-bit event sequence, event kind, DP number, Tuya type, payload length, whether it came from an ordinary or timed report, whether the DP is already interpreted, and a safe scalar when appropriate.
+
+RAW, BITMAP, and STRING contents are never retained. Credential/user identifier scalar DPs 12, 13, and 19 are also redacted from this generic timeline even though dedicated access-event diagnostics may expose those IDs elsewhere. The buffer is session-only, resets on integration reload/Home Assistant restart, and never exceeds 25 entries.
+
+For later testing, enable both **Unknown DP recorder** and **Sanitized event timeline**. The unknown-DP recorder summarizes recurring patterns; the timeline preserves ordering between events such as DP20, DP47, DP6, DP68, DP78, and newly discovered IDs.
+
 ## Suggested test sequence
 
 For reproducible testing, set protocol logging to **Parsed events** first. Raw mode is normally unnecessary.

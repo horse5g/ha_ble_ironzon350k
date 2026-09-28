@@ -60,6 +60,7 @@ from .const import (
     DP_350K_LAST_COMMAND_DURATION_MS,
     DP_350K_LAST_ACTUATION_LATENCY_MS,
     DP_350K_UNKNOWN_DP_COUNT,
+    DP_350K_EVENT_TIMELINE_COUNT,
 )
 from .devices import TuyaBLEData, TuyaBLEEntity, TuyaBLEProductInfo
 from .tuya_ble import TuyaBLEDataPointType, TuyaBLEDevice
@@ -152,6 +153,23 @@ def unknown_dp_recorder_getter(self: TuyaBLESensor) -> None:
             "raw_string_bitmap_contents_stored"
         ],
         "records": snapshot["records"],
+    }
+
+
+def event_timeline_getter(self: TuyaBLESensor) -> None:
+    """Expose the bounded sanitized 350K event timeline."""
+    snapshot = self._device.event_timeline_diagnostics
+    self._attr_native_value = int(snapshot["count"])
+    self._attr_extra_state_attributes = {
+        "capacity": snapshot["capacity"],
+        "session_only": snapshot["session_only"],
+        "raw_string_bitmap_contents_stored": snapshot[
+            "raw_string_bitmap_contents_stored"
+        ],
+        "credential_scalar_dps_redacted": snapshot[
+            "credential_scalar_dps_redacted"
+        ],
+        "events": snapshot["events"],
     }
 
 
@@ -429,6 +447,16 @@ mapping: dict[str, TuyaBLECategorySensorMapping] = {
                     description=SensorEntityDescription(
                         key="unknown_dp_recorder",
                         icon="mdi:radar",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_EVENT_TIMELINE_COUNT,
+                    getter=event_timeline_getter,
+                    description=SensorEntityDescription(
+                        key="event_timeline_recorder",
+                        icon="mdi:timeline-clock-outline",
                         entity_category=EntityCategory.DIAGNOSTIC,
                         entity_registry_enabled_default=False,
                     ),

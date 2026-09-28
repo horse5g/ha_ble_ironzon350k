@@ -251,6 +251,9 @@
       },
       "unknown_dp_recorder": {
         "name": "Unknown DP recorder"
+      },
+      "event_timeline_recorder": {
+        "name": "Sanitized event timeline"
       }
     },
     "switch": {
