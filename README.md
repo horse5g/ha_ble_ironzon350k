@@ -34,6 +34,27 @@ Still experimental:
 - The experimental HA lock entity is disabled by default in the entity registry because its Unlock action uses the DP71 path.
 - Exact semantics of several event/history datapoints are not fully understood.
 
+## Untested / pending physical validation
+
+The following features are implemented on `experiment/dp46-lock` but should still be treated as unverified until they are exercised on the physical lock. This checklist is intended to keep implemented code separate from behavior that has actually been confirmed.
+
+- [ ] **Experimental HA lock entity** — verify `lock()` still actuates correctly through DP46 after the recent transport/diagnostic changes, and that HA state only follows authoritative DP47.
+- [ ] **Remote unlock via DP71 / `ble_unlock_check`** — verify physical unlock, protocol ACK, DP47=`true`, and repeated cold/warm-session behavior.
+- [ ] **BLE/app unlock event detection (DP19)** — confirm whether HA/DP71 unlocks and Smart Life unlocks produce DP19, and whether it arrives as an ordinary or timed V4 report.
+- [ ] **Lock volume select (DP31)** — verify all exposed enum values (`Mute`, `Low`, `Normal`, `High`), audible behavior, and reported DP31 echo/state.
+- [ ] **Lock language select (DP28)** — verify the currently exposed language enum values, voice prompts, and reported DP28 echo/state.
+- [ ] **Native-size FD50 writes** — confirm the 350K uses single large GATT writes when the backend reports a usable write-without-response size (for example ~52-byte boolean-control frames and ~68-byte DP71 frames), and confirm fallback fragmentation still works.
+- [ ] **Keep BLE connection alive option** — verify the integration-option setting persists across reload/restart and that the ~120-second idle keepalive maintains an already-authenticated session without forcing a sleeping lock to connect.
+- [ ] **Transport diagnostics** — verify ACK latency, GATT write count, largest write size, and selected write chunk size update accurately for cold and warm commands.
+- [ ] **Session diagnostics** — verify reconnect count, connected-since timestamp, last-disconnect timestamp, command result, total command duration, and ACK-to-DP47 actuation latency.
+- [ ] **V4 sequence-gap detector** — verify normal monotonic progression, deliberate disconnect/reconnect behavior, wrap/reset handling, and that large discontinuities are not miscounted as thousands of missed events.
+- [ ] **Unknown DP recorder** — verify safe scalar collection for BOOL/ENUM/VALUE, redaction for RAW/BITMAP/STRING, the 32-DP bound, and reset behavior after integration reload.
+- [ ] **Sanitized event timeline** — verify ordering of ordinary/timed reports, the 25-entry bound, credential-ID redaction for DP12/13/19, and reset behavior after integration reload.
+- [ ] **DP20 event/history correlation** — use the recorder/timeline to correlate manual lock, auto-lock, app lock, fingerprint/PIN unlock, HA lock, and eventual HA unlock without assigning byte semantics prematurely.
+- [ ] **Cold-vs-warm latency comparison** — compare on-demand reconnect operations with an already-warm keepalive session to separate BLE/session setup time from protocol ACK and motor actuation time.
+
+Already-confirmed controls should not be reclassified as untested: DP33 passage control, DP46 physical lock, DP79 secure-lock control, DP32 secure-lock reported state, and DP47 physical lock state have all been observed working in live testing.
+
 ## Experimental branch
 
 Current active test work lives on:
