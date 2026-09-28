@@ -1,0 +1,65 @@
+name: Apply protocol logging settings update v3
+
+on:
+  push:
+    branches:
+      - experiment/dp46-lock
+    paths:
+      - .github/workflows/apply-protocol-log-settings-v3.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply corrected v2 patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/apply-protocol-log-settings-v2.yml').read_text()
+          start_marker = "          python - <<'PY'\n"
+          end_marker = "\n          PY\n\n      - name: Validate"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+
+          # v2's only failure was a sanity check that searched for the substring
+          # `_verbose_logging`, which also occurs in the compatibility method
+          # name `set_verbose_logging`. Check the removed private field instead.
+          script = script.replace(
+              "if '_verbose_logging' in s or '_log_350k_verbose' in s:",
+              "if 'self._verbose_logging' in s or '_log_350k_verbose' in s:",
+          )
+          exec(compile(script, '<protocol-log-settings-v3>', 'exec'))
+          PY
+
+      - name: Validate
+        shell: bash
+        run: |
+          python -m compileall -q custom_components/tuya_local_ble
+          python -m json.tool custom_components/tuya_local_ble/strings.json >/dev/null
+          python -m json.tool custom_components/tuya_local_ble/translations/en.json >/dev/null
+          ! grep -R -E "TuyaBLEVerboseLoggingSwitch|self\._verbose_logging|_log_350k_verbose" custom_components/tuya_local_ble
+          grep -n "protocol_log_level" custom_components/tuya_local_ble/config_flow.py
+          grep -n "set_protocol_log_level" custom_components/tuya_local_ble/tuya_ble/tuya_ble.py
+
+      - name: Commit
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/apply-protocol-log-settings.yml
+          rm -f .github/workflows/apply-protocol-log-settings-v2.yml
+          rm -f .github/workflows/apply-protocol-log-settings-v3.yml
+          git add -A
+          git commit -m "Move 350K protocol logging to integration options"
+          git push
