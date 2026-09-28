@@ -53,6 +53,12 @@ FINGERBOT_MODE_SWITCH: Final = "switch"
 FINGERBOT_MODE_PROGRAM: Final = "program"
 FINGERBOT_BUTTON_EVENT: Final = "fingerbot_button_pressed"
 
+# Synthetic, local-only button IDs for YD_350K actions that are not real Tuya
+# datapoints. Keep these named so dispatch/availability logic cannot silently
+# diverge from the entity mappings.
+BUTTON_350K_REFRESH_STATUS: Final = -9001
+BUTTON_350K_CLEAR_DIAGNOSTICS: Final = -9002
+
 # Synthetic, local-only datapoints for YD_350K diagnostics. Tuya BLE datapoint
 # IDs are one byte on this device, so negative IDs cannot collide with a real DP.
 DP_350K_LAST_ACCESS_EVENT: Final = -3501
