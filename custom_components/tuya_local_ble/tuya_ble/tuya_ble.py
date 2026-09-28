@@ -232,9 +232,9 @@ class TuyaBLEDevice:
         self._advertisement_data = advertisement_data
         self._operation_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
-        # YD_350K configuration writes can take many seconds to acknowledge.
+        # YD_350K control writes can take many seconds to acknowledge.
         # Keep a separate fail-fast lock so repeated HA UI clicks do not build
-        # an unbounded queue of stale DP32/DP33 writes behind _operation_lock.
+        # an unbounded queue of stale control writes behind _operation_lock.
         self._350k_control_lock = asyncio.Lock()
         self._client: BleakClientWithServiceCache | None = None
         self._expected_disconnect = False
@@ -1057,13 +1057,13 @@ class TuyaBLEDevice:
         return self._350k_control_lock.locked()
 
     def _build_350k_v4_bool_data(self, dp_id: int, value: bool) -> bytes:
-        """Build a YD_350K one-byte boolean V4 configuration write.
+        """Build a YD_350K one-byte boolean V4 control write.
 
         This is deliberately built from the requested value instead of the
         cached datapoint.  The cache therefore continues to represent the last
         value actually reported by the lock and is not changed optimistically.
         """
-        if dp_id not in (33, 79):
+        if dp_id not in (33, 46, 79):
             raise TuyaBLEDeviceError(0)
         return (
             b"\x00\x00\x00\x00\x01"
@@ -1073,14 +1073,14 @@ class TuyaBLEDevice:
         )
 
     async def set_350k_bool_datapoint(self, dp_id: int, value: bool) -> bool:
-        """Write one confirmed YD_350K boolean configuration datapoint.
+        """Write one YD_350K boolean control datapoint.
 
-        Only one DP33/DP79 operation is allowed at a time.  Extra UI clicks
+        Only one DP33/DP46/DP79 operation is allowed at a time.  Extra UI clicks
         while an operation is pending are ignored instead of queued.  The
         local datapoint cache is left untouched until the peripheral reports
         its new state through the normal notification parser.
         """
-        if self.product_id != "z1dfsaya" or dp_id not in (33, 79):
+        if self.product_id != "z1dfsaya" or dp_id not in (33, 46, 79):
             raise TuyaBLEDeviceError(0)
 
         if self._350k_control_lock.locked():

@@ -104,6 +104,21 @@ mapping: dict[str, TuyaBLECategoryButtonMapping] = {
             ),
         },
     ),
+    "jtmspro": TuyaBLECategoryButtonMapping(
+        products={
+            "z1dfsaya":  # Ironzon / YD_350K
+            [
+                TuyaBLEButtonMapping(
+                    dp_id=46,
+                    description=ButtonEntityDescription(
+                        key="lock_door",
+                        translation_key="lock_door",
+                        icon="mdi:lock",
+                    ),
+                ),
+            ],
+        },
+    ),
     "znhsb": TuyaBLECategoryButtonMapping(
         products={
             "cdlandip":  # Smart water bottle
@@ -150,6 +165,15 @@ class TuyaBLEButton(TuyaBLEEntity, ButtonEntity):
 
     def press(self) -> None:
         """Press the button."""
+        if self._device.product_id == "z1dfsaya" and self._mapping.dp_id == 46:
+            # DP46 (manual_lock) is a one-shot command, not persistent state.
+            # Always send True and leave the local DP cache untouched; DP47 is
+            # the authoritative physical lock state.
+            self._hass.create_task(
+                self._device.set_350k_bool_datapoint(46, True)
+            )
+            return
+
         datapoint = self._device.datapoints.get_or_create(
             self._mapping.dp_id,
             TuyaBLEDataPointType.DT_BOOL,
