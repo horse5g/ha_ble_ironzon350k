@@ -297,6 +297,9 @@ class TuyaBLEDevice:
         self._350k_keepalive_enabled = False
         self._350k_keepalive_task: asyncio.Task | None = None
         self._350k_last_rx_monotonic = time.monotonic()
+        # Track a recent experimental unlock command only long enough to
+        # correlate the authoritative DP47=True motor-state report.
+        self._350k_unlock_requested_monotonic: float | None = None
 
     def set_ble_device_and_advertisement_data(
         self, ble_device: BLEDevice, advertisement_data: AdvertisementData
@@ -719,6 +722,7 @@ class TuyaBLEDevice:
 
     def _disconnected(self, client: BleakClientWithServiceCache) -> None:
         """Disconnected callback."""
+        self._350k_unlock_requested_monotonic = None
         was_paired = self._is_paired
         self._is_paired = False
         self._fire_disconnected_callbacks()
@@ -999,6 +1003,34 @@ class TuyaBLEDevice:
         else:
             return (result, start_pos + offset)
 
+    def _get_350k_write_chunk_mtu(self) -> int:
+        """Return a safe FD50 write-without-response size for the 350K.
+
+        Smart Life negotiates ATT MTU 247 with this lock and sends complete
+        Tuya frames in a single Write Command when they fit. Bleak exposes the
+        usable payload size as max_write_without_response_size. Prefer that
+        negotiated value, capped at 244 bytes (247 minus the ATT header), but
+        fall back to the legacy 20-byte fragmentation path when unavailable.
+        """
+        client = self._client
+        if client is None:
+            return GATT_MTU
+        try:
+            characteristic = client.services.get_characteristic(
+                self._characteristic_write
+            )
+            if characteristic is None:
+                return GATT_MTU
+            max_size = int(
+                getattr(characteristic, "max_write_without_response_size", GATT_MTU)
+            )
+        except (AttributeError, TypeError, ValueError):
+            return GATT_MTU
+
+        if max_size <= GATT_MTU:
+            return GATT_MTU
+        return min(max_size, 244)
+
     def _build_packets(
         self,
         seq_num: int,
@@ -1056,7 +1088,13 @@ class TuyaBLEDevice:
                 packet += pack(">B", packet_protocol_version << 4)
 
                 chunk_mtu = GATT_MTU
-                if (
+                if self.product_id == "z1dfsaya" and self._uses_fd50_channel:
+                    # Match Smart Life: after ATT MTU negotiation the 350K
+                    # accepts complete Tuya frames in a single Write Command.
+                    # If the backend cannot report a larger write size, retain
+                    # the proven legacy 20-byte fragmentation behavior.
+                    chunk_mtu = self._get_350k_write_chunk_mtu()
+                elif (
                     code == TuyaBLECode.FUN_SENDER_DEVICE_INFO
                     and self.product_id != "ikphogdj"
                     and (
@@ -1064,8 +1102,7 @@ class TuyaBLEDevice:
                         or self._uses_fd50_channel
                     )
                 ):
-                    # TuyaOS FD50 locks use MTU exchange and expect DEVICE_INFO
-                    # in one write. ikphogdj is the known 20-byte exception.
+                    # Existing behavior for other TuyaOS FD50 locks.
                     chunk_mtu = 244
             data_part = encrypted[
                 pos:pos + chunk_mtu - len(packet)  # fmt: skip
@@ -1218,10 +1255,13 @@ class TuyaBLEDevice:
                 "%s: Sending experimental 350K DP71 unlock command",
                 self.address,
             )
+            # Never log the decrypted DP71 authorization body. Even Raw mode
+            # only records safe framing metadata for an unlock attempt.
             self._log_350k_raw(
-                "%s: 350K raw experimental DP71 unlock plaintext: %s",
+                "%s: 350K experimental DP71 unlock metadata: "
+                "plaintext_len=%s authorization_body=<redacted>",
                 self.address,
-                payload.hex(),
+                len(payload),
             )
 
             try:
@@ -1237,6 +1277,8 @@ class TuyaBLEDevice:
                     )
                     return False
 
+                unlock_started = time.monotonic()
+                self._350k_unlock_requested_monotonic = unlock_started
                 result = await self._send_packet_while_connected(
                     TuyaBLECode.FUN_SENDER_DPS_V4,
                     payload,
@@ -1244,6 +1286,8 @@ class TuyaBLEDevice:
                     True,
                 )
                 if not result:
+                    if self._350k_unlock_requested_monotonic == unlock_started:
+                        self._350k_unlock_requested_monotonic = None
                     _LOGGER.warning(
                         "%s: 350K DP71 unlock was not acknowledged",
                         self.address,
@@ -1254,6 +1298,7 @@ class TuyaBLEDevice:
                 # still determined exclusively by the later DP47 notification.
                 return True
             except BLEAK_EXCEPTIONS:
+                self._350k_unlock_requested_monotonic = None
                 _LOGGER.warning(
                     "%s: 350K DP71 unlock failed due to BLE communication error",
                     self.address,
@@ -1261,6 +1306,7 @@ class TuyaBLEDevice:
                 )
                 return False
             except Exception:
+                self._350k_unlock_requested_monotonic = None
                 _LOGGER.exception(
                     "%s: Unexpected error sending experimental 350K DP71 unlock",
                     self.address,
@@ -1367,8 +1413,20 @@ class TuyaBLEDevice:
             )
         packets: list[bytes] = self._build_packets(
             seq_num, code, data, response_to)
+        if self.product_id == "z1dfsaya":
+            self._log_350k_raw(
+                "%s: 350K TX metadata code=%s plaintext_len=%s "
+                "gatt_writes=%s write_sizes=%s transport_bytes=%s",
+                self.address,
+                code.name,
+                len(data),
+                len(packets),
+                [len(packet) for packet in packets],
+                sum(len(packet) for packet in packets),
+            )
         await self._int_send_packet_while_connected(packets)
         if future:
+            wait_started = time.monotonic()
             try:
                 await asyncio.wait_for(future, RESPONSE_WAIT_TIMEOUT)
             except asyncio.TimeoutError:
@@ -1378,6 +1436,15 @@ class TuyaBLEDevice:
                     self.rssi,
                 )
                 result = False
+            if self.product_id == "z1dfsaya":
+                self._log_350k_event(
+                    "%s: 350K response code=%s seq=%s acknowledged=%s latency_ms=%.1f",
+                    self.address,
+                    code.name,
+                    seq_num,
+                    result,
+                    (time.monotonic() - wait_started) * 1000.0,
+                )
             self._input_expected_responses.pop(seq_num, None)
 
         return result
@@ -1886,6 +1953,21 @@ class TuyaBLEDevice:
             value = decode_value(dp_type, raw_value)
         except (UnicodeDecodeError, ValueError):
             value = raw_value
+
+        if dp_id == 47 and dp_type == TuyaBLEDataPointType.DT_BOOL:
+            unlock_started = self._350k_unlock_requested_monotonic
+            if unlock_started is not None:
+                elapsed = time.monotonic() - unlock_started
+                if elapsed > 15.0:
+                    self._350k_unlock_requested_monotonic = None
+                elif bool(value):
+                    self._log_350k_event(
+                        "%s: 350K experimental unlock confirmed by DP47=True "
+                        "after %.1f ms",
+                        self.address,
+                        elapsed * 1000.0,
+                    )
+                    self._350k_unlock_requested_monotonic = None
 
         trailing = data[next_pos:]
         self._log_350k_event(
