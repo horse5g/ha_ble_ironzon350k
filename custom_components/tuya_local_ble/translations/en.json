@@ -214,7 +214,7 @@
         "name": "Last access event time"
       },
       "last_lock_record": {
-        "name": "Last lock record"
+        "name": "Last lock record (raw diagnostic)"
       },
       "last_tx_ack_latency": {
         "name": "Last TX ACK latency"
