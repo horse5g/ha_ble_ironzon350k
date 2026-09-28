@@ -39,6 +39,7 @@ PLATFORMS: list[Platform] = [
 
 _LOGGER = logging.getLogger(__name__)
 
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Tuya BLE from a config entry."""
     address: str = entry.data[CONF_ADDRESS]
@@ -65,19 +66,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     product_info = get_device_product_info(device)
 
     coordinator = TuyaBLECoordinator(hass, device)
-
-    '''
-    try:
-        await device.update()
-    except BLEAK_EXCEPTIONS as ex:
-        raise ConfigEntryNotReady(
-            f"Could not communicate with Tuya BLE device with address {address}"
-        ) from ex
-    '''
-    #hass.async_create_task(device.update())
-
     await device.update()
-    
+
     last_raykube_advertisement_update = 0.0
 
     async def _async_update_raykube_from_advertisement() -> None:
@@ -102,7 +92,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         service_info: bluetooth.BluetoothServiceInfoBleak,
         change: bluetooth.BluetoothChange,
     ) -> None:
-        """Update from a ble callback."""
+        """Update from a BLE callback."""
         nonlocal last_raykube_advertisement_update
         device.set_ble_device_and_advertisement_data(
             service_info.device, service_info.advertisement
