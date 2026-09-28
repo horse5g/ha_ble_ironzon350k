@@ -12,6 +12,7 @@ from homeassistant.components.button import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -125,6 +126,26 @@ mapping: dict[str, TuyaBLECategoryButtonMapping] = {
                         entity_registry_enabled_default=False,
                     ),
                 ),
+                TuyaBLEButtonMapping(
+                    dp_id=-9001,
+                    description=ButtonEntityDescription(
+                        key="refresh_status",
+                        translation_key="refresh_status",
+                        icon="mdi:refresh",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLEButtonMapping(
+                    dp_id=-9002,
+                    description=ButtonEntityDescription(
+                        key="clear_diagnostics",
+                        translation_key="clear_diagnostics",
+                        icon="mdi:broom",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
             ],
         },
     ),
@@ -187,6 +208,14 @@ class TuyaBLEButton(TuyaBLEEntity, ButtonEntity):
             # Experimental authenticated BLE unlock. The command ACK is not
             # treated as proof of an unlocked door; DP47 remains authoritative.
             self._hass.create_task(self._device.unlock_350k())
+            return
+
+        if self._device.product_id == "z1dfsaya" and self._mapping.dp_id == -9001:
+            self._hass.create_task(self._device.refresh_350k_status())
+            return
+
+        if self._device.product_id == "z1dfsaya" and self._mapping.dp_id == -9002:
+            self._device.clear_350k_diagnostics()
             return
 
         datapoint = self._device.datapoints.get_or_create(

@@ -29,6 +29,8 @@ from .keyman import HASSTuyaBLEDeviceManager
 from .const import (
     DEVICE_DEF_MANUFACTURER,
     DOMAIN,
+    EVENT_350K,
+    DP_350K_LAST_ACCESS_EVENT,
     FINGERBOT_BUTTON_EVENT,
     SET_DISCONNECTED_DELAY,
 )
@@ -117,10 +119,34 @@ class TuyaBLECoordinator(DataUpdateCoordinator[None]):
             self.async_update_listeners()
 
     @callback
+    def _async_fire_350k_event(self, event_type: str, timestamp: float) -> None:
+        registry = dr.async_get(self.hass)
+        registry_device = registry.async_get_device(
+            identifiers={(DOMAIN, self._device.address)}
+        )
+        payload = {
+            "type": event_type,
+            "timestamp": int(timestamp),
+            "address": self._device.address,
+        }
+        if registry_device is not None:
+            payload[CONF_DEVICE_ID] = registry_device.id
+        self.hass.bus.async_fire(EVENT_350K, payload)
+
+    @callback
     def _async_handle_update(self, updates: list[TuyaBLEDataPoint]) -> None:
         """Just trigger the callbacks."""
         self._async_handle_connect()
         self.async_set_updated_data(None)
+        if self._device.product_id == "z1dfsaya":
+            for update in updates:
+                if update.id == DP_350K_LAST_ACCESS_EVENT:
+                    self._async_fire_350k_event(str(update.value), update.timestamp)
+                elif update.id == 47 and update.changed_by_device:
+                    self._async_fire_350k_event(
+                        "unlocked" if bool(update.value) else "locked",
+                        update.timestamp,
+                    )
         info = get_device_product_info(self._device)
         if info and info.fingerbot and info.fingerbot.manual_control != 0:
             for update in updates:

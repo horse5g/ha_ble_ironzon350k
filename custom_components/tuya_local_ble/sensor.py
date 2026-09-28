@@ -61,6 +61,14 @@ from .const import (
     DP_350K_LAST_ACTUATION_LATENCY_MS,
     DP_350K_UNKNOWN_DP_COUNT,
     DP_350K_EVENT_TIMELINE_COUNT,
+    DP_350K_LAST_DEVICE_REPORT_TIME,
+    DP_350K_STATE_AGE_SECONDS,
+    DP_350K_SESSION_STATE,
+    DP_350K_LAST_RX_AGE_SECONDS,
+    DP_350K_COMMAND_COUNTERS,
+    DP_350K_DEVICE_VERSION,
+    DP_350K_HARDWARE_VERSION,
+    DP_350K_PROTOCOL_VERSION,
 )
 from .devices import TuyaBLEData, TuyaBLEEntity, TuyaBLEProductInfo
 from .tuya_ble import TuyaBLEDataPointType, TuyaBLEDevice
@@ -140,6 +148,25 @@ def diagnostic_timestamp_getter(self: TuyaBLESensor) -> None:
         self._attr_native_value = datetime.fromtimestamp(
             int(datapoint.value), tz=timezone.utc
         )
+
+
+def state_age_getter(self: TuyaBLESensor) -> None:
+    """Expose seconds since the last parsed device V4 report."""
+    self._attr_native_value = self._device.state_age_seconds
+
+
+def session_state_getter(self: TuyaBLESensor) -> None:
+    self._attr_native_value = self._device.session_state
+
+
+def last_rx_age_getter(self: TuyaBLESensor) -> None:
+    self._attr_native_value = self._device.last_rx_age_seconds
+
+
+def command_counters_getter(self: TuyaBLESensor) -> None:
+    counters = self._device.command_counters
+    self._attr_native_value = int(counters["total"])
+    self._attr_extra_state_attributes = counters
 
 
 def unknown_dp_recorder_getter(self: TuyaBLESensor) -> None:
@@ -457,6 +484,86 @@ mapping: dict[str, TuyaBLECategorySensorMapping] = {
                     description=SensorEntityDescription(
                         key="event_timeline_recorder",
                         icon="mdi:timeline-clock-outline",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_LAST_DEVICE_REPORT_TIME,
+                    getter=diagnostic_timestamp_getter,
+                    description=SensorEntityDescription(
+                        key="last_device_report",
+                        device_class=SensorDeviceClass.TIMESTAMP,
+                        icon="mdi:clock-check-outline",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_STATE_AGE_SECONDS,
+                    getter=state_age_getter,
+                    description=SensorEntityDescription(
+                        key="state_age",
+                        icon="mdi:timer-outline",
+                        native_unit_of_measurement="s",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_SESSION_STATE,
+                    getter=session_state_getter,
+                    description=SensorEntityDescription(
+                        key="session_state",
+                        icon="mdi:bluetooth-connect",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_LAST_RX_AGE_SECONDS,
+                    getter=last_rx_age_getter,
+                    description=SensorEntityDescription(
+                        key="last_rx_age",
+                        icon="mdi:bluetooth-audio",
+                        native_unit_of_measurement="s",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_COMMAND_COUNTERS,
+                    getter=command_counters_getter,
+                    description=SensorEntityDescription(
+                        key="command_counters",
+                        icon="mdi:counter",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_DEVICE_VERSION,
+                    description=SensorEntityDescription(
+                        key="device_firmware_version",
+                        icon="mdi:chip",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_HARDWARE_VERSION,
+                    description=SensorEntityDescription(
+                        key="device_hardware_version",
+                        icon="mdi:expansion-card",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+                TuyaBLESensorMapping(
+                    dp_id=DP_350K_PROTOCOL_VERSION,
+                    description=SensorEntityDescription(
+                        key="device_protocol_version",
+                        icon="mdi:protocol",
                         entity_category=EntityCategory.DIAGNOSTIC,
                         entity_registry_enabled_default=False,
                     ),
@@ -782,6 +889,17 @@ class TuyaBLESensor(TuyaBLEEntity, SensorEntity):
     ) -> None:
         super().__init__(hass, coordinator, device, product, mapping.description)
         self._mapping = mapping
+
+    @property
+    def should_poll(self) -> bool:
+        return self._mapping.dp_id in (
+            DP_350K_STATE_AGE_SECONDS,
+            DP_350K_LAST_RX_AGE_SECONDS,
+        )
+
+    async def async_update(self) -> None:
+        if self._mapping.getter is not None:
+            self._mapping.getter(self)
 
     @callback
     def _handle_coordinator_update(self) -> None:

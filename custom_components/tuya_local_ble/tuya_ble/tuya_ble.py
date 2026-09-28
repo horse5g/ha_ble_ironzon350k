@@ -42,6 +42,14 @@ from ..const import (
     DP_350K_LAST_ACTUATION_LATENCY_MS,
     DP_350K_UNKNOWN_DP_COUNT,
     DP_350K_EVENT_TIMELINE_COUNT,
+    DP_350K_LAST_DEVICE_REPORT_TIME,
+    DP_350K_STATE_AGE_SECONDS,
+    DP_350K_SESSION_STATE,
+    DP_350K_LAST_RX_AGE_SECONDS,
+    DP_350K_COMMAND_COUNTERS,
+    DP_350K_DEVICE_VERSION,
+    DP_350K_HARDWARE_VERSION,
+    DP_350K_PROTOCOL_VERSION,
     PROTOCOL_LOG_EVENTS,
     PROTOCOL_LOG_LEVELS,
     PROTOCOL_LOG_OFF,
@@ -60,6 +68,19 @@ from .const import (
     TuyaBLECode,
     TuyaBLEDataPointType,
 )
+from .diagnostics_350k import (
+    EVENT_TIMELINE_CAPACITY,
+    INTERPRETED_DPS,
+    TIMELINE_SENSITIVE_SCALAR_DPS,
+    append_bounded_event,
+    build_v4_bool_data,
+    build_v4_enum_data,
+    compute_sequence_gap,
+    normalize_write_chunk_size,
+    sanitize_marker_text,
+    sanitize_timeline_scalar,
+    valid_dp71_payload_shape,
+)
 from .exceptions import (
     TuyaBLEDataCRCError,
     TuyaBLEDataFormatError,
@@ -74,29 +95,10 @@ _LOGGER = logging.getLogger(__name__)
 
 BLEAK_EXCEPTIONS = (*BLEAK_RETRY_EXCEPTIONS, OSError)
 
-# Datapoints whose 350K receive-side meaning is sufficiently understood that
-# they already have dedicated parsing/entities. Everything else is eligible
-# for the sanitized discovery recorder below.
-_350K_EVENT_TIMELINE_CAPACITY = 25
-# Credential/user identifiers are useful elsewhere in dedicated diagnostics,
-# but the generic timeline deliberately redacts them so it is safer to share.
-_350K_TIMELINE_SENSITIVE_SCALAR_DPS = frozenset({12, 13, 19})
-
-_350K_INTERPRETED_DPS = frozenset({
-    8,   # battery
-    12,  # fingerprint credential id
-    13,  # PIN credential id
-    19,  # BLE/app unlock event
-    20,  # raw lock history record (already exposed separately)
-    21,  # credential failure/alarm
-    28,  # language
-    31,  # beep volume
-    32,  # secure-lock reported state
-    33,  # passage mode
-    46,  # manual lock command/status
-    47,  # physical lock state
-    79,  # secure-lock control
-})
+# Shared with the pure unit-testable helpers.
+_350K_EVENT_TIMELINE_CAPACITY = EVENT_TIMELINE_CAPACITY
+_350K_TIMELINE_SENSITIVE_SCALAR_DPS = TIMELINE_SENSITIVE_SCALAR_DPS
+_350K_INTERPRETED_DPS = INTERPRETED_DPS
 
 
 class TuyaBLEDataPoint:
@@ -348,6 +350,19 @@ class TuyaBLEDevice:
         # Bounded, session-local ordering of decoded 350K reports. The timeline
         # never keeps raw/string/bitmap payload contents or credential IDs.
         self._350k_event_timeline: list[dict[str, object]] = []
+        self._350k_last_rx_seen = False
+        self._350k_last_device_report_time: float | None = None
+        self._350k_command_counters: dict[str, int] = {
+            "total": 0,
+            "success": 0,
+            "timeout_or_not_acknowledged": 0,
+            "ble_error": 0,
+            "not_connected": 0,
+            "busy": 0,
+            "unavailable": 0,
+            "error": 0,
+            "reconnect_required": 0,
+        }
         # Session-local diagnostics. These intentionally reset when the HA
         # config entry reloads; they describe the current integration runtime.
         self._350k_seen_connected_once = False
@@ -371,20 +386,20 @@ class TuyaBLEDevice:
         if await self._update_device_info():
             if self.product_id == "z1dfsaya":
                 now = time.time()
-                self._datapoints._update_from_device(
-                    DP_350K_UNKNOWN_DP_COUNT,
-                    now,
-                    0,
-                    TuyaBLEDataPointType.DT_VALUE,
-                    0,
-                )
-                self._datapoints._update_from_device(
-                    DP_350K_EVENT_TIMELINE_COUNT,
-                    now,
-                    0,
-                    TuyaBLEDataPointType.DT_VALUE,
-                    0,
-                )
+                for dp_id, dp_type, value in (
+                    (DP_350K_UNKNOWN_DP_COUNT, TuyaBLEDataPointType.DT_VALUE, 0),
+                    (DP_350K_EVENT_TIMELINE_COUNT, TuyaBLEDataPointType.DT_VALUE, 0),
+                    (DP_350K_STATE_AGE_SECONDS, TuyaBLEDataPointType.DT_VALUE, 0),
+                    (DP_350K_SESSION_STATE, TuyaBLEDataPointType.DT_STRING, "disconnected"),
+                    (DP_350K_LAST_RX_AGE_SECONDS, TuyaBLEDataPointType.DT_VALUE, 0),
+                    (DP_350K_COMMAND_COUNTERS, TuyaBLEDataPointType.DT_VALUE, 0),
+                    (DP_350K_DEVICE_VERSION, TuyaBLEDataPointType.DT_STRING, ""),
+                    (DP_350K_HARDWARE_VERSION, TuyaBLEDataPointType.DT_STRING, ""),
+                    (DP_350K_PROTOCOL_VERSION, TuyaBLEDataPointType.DT_STRING, ""),
+                ):
+                    self._datapoints._update_from_device(
+                        dp_id, now, 0, dp_type, value
+                    )
             self._decode_advertisement_data()
             
     def _build_pairing_request(self) -> bytes:
@@ -646,6 +661,238 @@ class TuyaBLEDevice:
         ):
             self._fire_callbacks(updates)
 
+    @property
+    def session_state(self) -> str:
+        """Return disconnected/connected/authenticated for local diagnostics."""
+        if self._client is not None and self._client.is_connected:
+            return "authenticated" if self._is_paired else "connected"
+        return "disconnected"
+
+    @property
+    def last_device_report_timestamp(self) -> float | None:
+        return self._350k_last_device_report_time
+
+    @property
+    def state_age_seconds(self) -> int | None:
+        if self._350k_last_device_report_time is None:
+            return None
+        return max(0, int(time.time() - self._350k_last_device_report_time))
+
+    @property
+    def last_rx_age_seconds(self) -> int | None:
+        if not self._350k_last_rx_seen:
+            return None
+        return max(0, int(time.monotonic() - self._350k_last_rx_monotonic))
+
+    @property
+    def command_counters(self) -> dict[str, int]:
+        return dict(self._350k_command_counters)
+
+    def _publish_350k_command_counters(self) -> None:
+        self._publish_350k_diagnostics(
+            [(
+                DP_350K_COMMAND_COUNTERS,
+                TuyaBLEDataPointType.DT_VALUE,
+                int(self._350k_command_counters["total"]),
+            )]
+        )
+
+    def _begin_350k_command(self, command: str) -> float:
+        self._350k_command_counters["total"] += 1
+        if self.session_state != "authenticated":
+            self._350k_command_counters["reconnect_required"] += 1
+        self._publish_350k_command_counters()
+        return time.monotonic()
+
+    def _record_350k_busy(self, command: str) -> None:
+        self._350k_command_counters["total"] += 1
+        self._350k_command_counters["busy"] += 1
+        self._publish_350k_diagnostics(
+            [
+                (DP_350K_LAST_COMMAND, TuyaBLEDataPointType.DT_STRING, command),
+                (DP_350K_LAST_COMMAND_RESULT, TuyaBLEDataPointType.DT_STRING, "busy"),
+                (DP_350K_LAST_COMMAND_DURATION_MS, TuyaBLEDataPointType.DT_VALUE, 0),
+                (
+                    DP_350K_COMMAND_COUNTERS,
+                    TuyaBLEDataPointType.DT_VALUE,
+                    int(self._350k_command_counters["total"]),
+                ),
+            ]
+        )
+
+    def _record_350k_device_report(
+        self, datapoints: list[TuyaBLEDataPoint]
+    ) -> None:
+        """Record receive-time freshness for a validated 350K V4 report."""
+        now = time.time()
+        self._350k_last_device_report_time = now
+        for dp_id, value in (
+            (DP_350K_LAST_DEVICE_REPORT_TIME, int(now)),
+            (DP_350K_STATE_AGE_SECONDS, 0),
+        ):
+            self._datapoints._update_from_device(
+                dp_id, now, 0, TuyaBLEDataPointType.DT_VALUE, value
+            )
+            datapoints.append(self._datapoints[dp_id])
+
+    def mark_350k_test(self, label: str, note: str | None = None) -> None:
+        """Insert a human test marker into the sanitized local timeline."""
+        if self.product_id != "z1dfsaya":
+            raise TuyaBLEDeviceError(0)
+        safe_label = sanitize_marker_text(label, 64)
+        if not safe_label:
+            raise ValueError("marker label cannot be empty")
+        entry: dict[str, object] = {
+            "timestamp": int(time.time()),
+            "source": "marker",
+            "label": safe_label,
+            "user_supplied": True,
+        }
+        if note:
+            safe_note = sanitize_marker_text(note, 100)
+            if safe_note:
+                entry["note"] = safe_note
+        append_bounded_event(
+            self._350k_event_timeline,
+            entry,
+            capacity=_350K_EVENT_TIMELINE_CAPACITY,
+        )
+        self._publish_350k_diagnostics(
+            [(
+                DP_350K_EVENT_TIMELINE_COUNT,
+                TuyaBLEDataPointType.DT_VALUE,
+                len(self._350k_event_timeline),
+            )]
+        )
+
+    def clear_350k_diagnostics(self) -> None:
+        """Clear experiment observations without changing physical lock state."""
+        if self.product_id != "z1dfsaya":
+            raise TuyaBLEDeviceError(0)
+        self._350k_unknown_dps.clear()
+        self._350k_unknown_dp_overflow = 0
+        self._350k_event_timeline.clear()
+        self._350k_last_event_seq = None
+        self._350k_event_sequence_gaps = 0
+        for key in self._350k_command_counters:
+            self._350k_command_counters[key] = 0
+        self._publish_350k_diagnostics(
+            [
+                (DP_350K_UNKNOWN_DP_COUNT, TuyaBLEDataPointType.DT_VALUE, 0),
+                (DP_350K_EVENT_TIMELINE_COUNT, TuyaBLEDataPointType.DT_VALUE, 0),
+                (DP_350K_EVENT_SEQUENCE_GAPS, TuyaBLEDataPointType.DT_VALUE, 0),
+                (DP_350K_COMMAND_COUNTERS, TuyaBLEDataPointType.DT_VALUE, 0),
+                (DP_350K_LAST_COMMAND, TuyaBLEDataPointType.DT_STRING, ""),
+                (DP_350K_LAST_COMMAND_RESULT, TuyaBLEDataPointType.DT_STRING, ""),
+                (DP_350K_LAST_COMMAND_DURATION_MS, TuyaBLEDataPointType.DT_VALUE, 0),
+                (DP_350K_LAST_ACTUATION_LATENCY_MS, TuyaBLEDataPointType.DT_VALUE, 0),
+                (DP_350K_LAST_ACK_LATENCY_MS, TuyaBLEDataPointType.DT_VALUE, 0),
+                (DP_350K_LAST_GATT_WRITE_COUNT, TuyaBLEDataPointType.DT_VALUE, 0),
+                (DP_350K_LAST_GATT_WRITE_BYTES, TuyaBLEDataPointType.DT_VALUE, 0),
+            ]
+        )
+
+    def sanitized_diagnostics_snapshot(self) -> dict[str, object]:
+        """Return a shareable snapshot without auth/credential/raw payload data."""
+        def diag_value(dp_id: int) -> object | None:
+            dp = self._datapoints[dp_id]
+            if dp is None or isinstance(dp.value, (bytes, bytearray)):
+                return None
+            return dp.value
+
+        known: dict[str, dict[str, object]] = {}
+        for dp_id in (8, 28, 31, 32, 33, 47, 68, 78, 79):
+            dp = self._datapoints[dp_id]
+            if dp is None or isinstance(dp.value, (bytes, bytearray)):
+                continue
+            known[str(dp_id)] = {"type": dp.type.name, "value": dp.value}
+
+        return {
+            "sanitized": True,
+            "generated_at": int(time.time()),
+            "device": {
+                "product_id": self.product_id,
+                "product_model": self.product_model,
+                "product_name": self.product_name,
+                "firmware_version": self.device_version,
+                "hardware_version": self.hardware_version,
+                "protocol_version": self.protocol_version,
+            },
+            "session": {
+                "state": self.session_state,
+                "keepalive_enabled": self.keepalive_enabled,
+                "reconnect_count": self._350k_reconnect_count,
+                "connected_since": diag_value(DP_350K_CONNECTED_SINCE),
+                "last_disconnect": diag_value(DP_350K_LAST_DISCONNECT_TIME),
+                "last_device_report": (
+                    int(self._350k_last_device_report_time)
+                    if self._350k_last_device_report_time is not None
+                    else None
+                ),
+                "state_age_seconds": self.state_age_seconds,
+                "last_rx_age_seconds": self.last_rx_age_seconds,
+                "last_event_sequence": self._350k_last_event_seq,
+                "sequence_gaps": self._350k_event_sequence_gaps,
+            },
+            "commands": {
+                "counters": self.command_counters,
+                "last_command": diag_value(DP_350K_LAST_COMMAND),
+                "last_result": diag_value(DP_350K_LAST_COMMAND_RESULT),
+                "last_duration_ms": diag_value(DP_350K_LAST_COMMAND_DURATION_MS),
+                "last_ack_latency_ms": diag_value(DP_350K_LAST_ACK_LATENCY_MS),
+                "last_actuation_latency_ms": diag_value(
+                    DP_350K_LAST_ACTUATION_LATENCY_MS
+                ),
+            },
+            "transport": {
+                "last_gatt_write_count": diag_value(DP_350K_LAST_GATT_WRITE_COUNT),
+                "largest_last_gatt_write": diag_value(DP_350K_LAST_GATT_WRITE_BYTES),
+                "write_chunk_size": diag_value(DP_350K_WRITE_CHUNK_SIZE),
+            },
+            "known_datapoints": known,
+            "unknown_datapoints": self.unknown_dp_diagnostics,
+            "timeline": self.event_timeline_diagnostics,
+        }
+
+    async def refresh_350k_status(self) -> bool:
+        """Explicitly connect/authenticate and request DEVICE_STATUS once."""
+        if self.product_id != "z1dfsaya":
+            raise TuyaBLEDeviceError(0)
+        command = "refresh_status"
+        if self._350k_control_lock.locked():
+            self._record_350k_busy(command)
+            return False
+        started = self._begin_350k_command(command)
+        async with self._350k_control_lock:
+            try:
+                await self._ensure_connected()
+                if (
+                    self._expected_disconnect
+                    or self._client is None
+                    or not self._client.is_connected
+                ):
+                    self._finish_350k_command(command, "not_connected", started)
+                    return False
+                result = await self._send_packet_while_connected(
+                    TuyaBLECode.FUN_SENDER_DEVICE_STATUS,
+                    bytes(),
+                    0,
+                    True,
+                )
+                self._finish_350k_command(
+                    command,
+                    "acknowledged" if result else "not_acknowledged",
+                    started,
+                )
+                return result
+            except BLEAK_EXCEPTIONS:
+                self._finish_350k_command(command, "ble_error", started)
+                return False
+            except Exception:
+                self._finish_350k_command(command, "error", started)
+                _LOGGER.exception("%s: 350K manual status refresh failed", self.address)
+                return False
+
     def _finish_350k_command(
         self, command: str, result: str, started_monotonic: float
     ) -> None:
@@ -654,6 +901,14 @@ class TuyaBLEDevice:
             0,
             int(round((time.monotonic() - started_monotonic) * 1000.0)),
         )
+        if result == "acknowledged":
+            self._350k_command_counters["success"] += 1
+        elif result == "not_acknowledged":
+            self._350k_command_counters["timeout_or_not_acknowledged"] += 1
+        elif result in self._350k_command_counters:
+            self._350k_command_counters[result] += 1
+        else:
+            self._350k_command_counters["error"] += 1
         self._publish_350k_diagnostics(
             [
                 (DP_350K_LAST_COMMAND, TuyaBLEDataPointType.DT_STRING, command),
@@ -662,6 +917,11 @@ class TuyaBLEDevice:
                     DP_350K_LAST_COMMAND_DURATION_MS,
                     TuyaBLEDataPointType.DT_VALUE,
                     duration_ms,
+                ),
+                (
+                    DP_350K_COMMAND_COUNTERS,
+                    TuyaBLEDataPointType.DT_VALUE,
+                    int(self._350k_command_counters["total"]),
                 ),
             ]
         )
@@ -700,6 +960,26 @@ class TuyaBLEDevice:
                     TuyaBLEDataPointType.DT_VALUE,
                     self._350k_reconnect_count,
                 ),
+                (
+                    DP_350K_SESSION_STATE,
+                    TuyaBLEDataPointType.DT_STRING,
+                    "authenticated",
+                ),
+                (
+                    DP_350K_DEVICE_VERSION,
+                    TuyaBLEDataPointType.DT_STRING,
+                    self.device_version,
+                ),
+                (
+                    DP_350K_HARDWARE_VERSION,
+                    TuyaBLEDataPointType.DT_STRING,
+                    self.hardware_version,
+                ),
+                (
+                    DP_350K_PROTOCOL_VERSION,
+                    TuyaBLEDataPointType.DT_STRING,
+                    self.protocol_version,
+                ),
             ],
             timestamp=now,
         )
@@ -713,30 +993,27 @@ class TuyaBLEDevice:
         transport loss. Large jumps are treated as a lock reboot/reset rather
         than adding an absurd number of missing reports.
         """
-        mask = (1 << 40) - 1
         previous = self._350k_last_event_seq
-        if previous is not None:
-            expected = (previous + 1) & mask
-            forward = (event_seq - expected) & mask
-            if 0 < forward <= 1000:
-                self._350k_event_sequence_gaps += forward
-                self._log_350k_event(
-                    "%s: 350K V4 sequence gap previous=0x%010x current=0x%010x "
-                    "missing=%s total_missing=%s",
-                    self.address,
-                    previous,
-                    event_seq,
-                    forward,
-                    self._350k_event_sequence_gaps,
-                )
-            elif forward > 1000 and event_seq != expected:
-                self._log_350k_event(
-                    "%s: 350K V4 sequence discontinuity previous=0x%010x "
-                    "current=0x%010x (reset/reorder; not counted)",
-                    self.address,
-                    previous,
-                    event_seq,
-                )
+        missing, discontinuity = compute_sequence_gap(previous, event_seq)
+        if missing:
+            self._350k_event_sequence_gaps += missing
+            self._log_350k_event(
+                "%s: 350K V4 sequence gap previous=0x%010x current=0x%010x "
+                "missing=%s total_missing=%s",
+                self.address,
+                previous,
+                event_seq,
+                missing,
+                self._350k_event_sequence_gaps,
+            )
+        elif discontinuity and previous is not None:
+            self._log_350k_event(
+                "%s: 350K V4 sequence discontinuity previous=0x%010x "
+                "current=0x%010x (reset/reorder; not counted)",
+                self.address,
+                previous,
+                event_seq,
+            )
         self._350k_last_event_seq = event_seq
         now = time.time()
         for dp_id, value in (
@@ -915,17 +1192,9 @@ class TuyaBLEDevice:
         if self.product_id != "z1dfsaya":
             return None
 
-        payload_redacted = False
-        scalar: bool | int | None = None
-        if dp_type == TuyaBLEDataPointType.DT_BOOL:
-            scalar = bool(value)
-        elif dp_type in (TuyaBLEDataPointType.DT_ENUM, TuyaBLEDataPointType.DT_VALUE):
-            if dp_id in _350K_TIMELINE_SENSITIVE_SCALAR_DPS:
-                payload_redacted = True
-            else:
-                scalar = int(value)
-        else:
-            payload_redacted = True
+        scalar, payload_redacted = sanitize_timeline_scalar(
+            dp_id, dp_type.name, value
+        )
 
         entry: dict[str, object] = {
             "timestamp": int(timestamp),
@@ -941,11 +1210,11 @@ class TuyaBLEDevice:
         if scalar is not None:
             entry["scalar"] = scalar
 
-        self._350k_event_timeline.append(entry)
-        if len(self._350k_event_timeline) > _350K_EVENT_TIMELINE_CAPACITY:
-            del self._350k_event_timeline[
-                : len(self._350k_event_timeline) - _350K_EVENT_TIMELINE_CAPACITY
-            ]
+        append_bounded_event(
+            self._350k_event_timeline,
+            entry,
+            capacity=_350K_EVENT_TIMELINE_CAPACITY,
+        )
 
         self._datapoints._update_from_device(
             DP_350K_EVENT_TIMELINE_COUNT,
@@ -1127,7 +1396,12 @@ class TuyaBLEDevice:
                         DP_350K_LAST_DISCONNECT_TIME,
                         TuyaBLEDataPointType.DT_VALUE,
                         int(now),
-                    )
+                    ),
+                    (
+                        DP_350K_SESSION_STATE,
+                        TuyaBLEDataPointType.DT_STRING,
+                        "disconnected",
+                    ),
                 ],
                 timestamp=now,
                 fire=False,
@@ -1440,9 +1714,9 @@ class TuyaBLEDevice:
         except (AttributeError, TypeError, ValueError):
             return GATT_MTU
 
-        if max_size <= GATT_MTU:
-            return GATT_MTU
-        return min(max_size, 244)
+        return normalize_write_chunk_size(
+            max_size, fallback=GATT_MTU, cap=244
+        )
 
     def _build_packets(
         self,
@@ -1542,18 +1816,19 @@ class TuyaBLEDevice:
         """
         if dp_id not in (33, 46, 79):
             raise TuyaBLEDeviceError(0)
-        return (
-            b"\x00\x00\x00\x00\x01"
-            + bytes([dp_id, int(TuyaBLEDataPointType.DT_BOOL.value)])
-            + b"\x00\x01"
-            + bytes([1 if value else 0])
-        )
+        return build_v4_bool_data(dp_id, value)
 
     async def set_350k_bool_datapoint(self, dp_id: int, value: bool) -> bool:
         """Write one YD_350K boolean control datapoint."""
         if self.product_id != "z1dfsaya" or dp_id not in (33, 46, 79):
             raise TuyaBLEDeviceError(0)
+        command = {
+            33: "passage_on" if value else "passage_off",
+            46: "lock" if value else "manual_lock_false",
+            79: "secure_on" if value else "secure_off",
+        }[dp_id]
         if self._350k_control_lock.locked():
+            self._record_350k_busy(command)
             _LOGGER.warning(
                 "%s: Ignoring 350K DP%s=%s; another control operation is still pending",
                 self.address,
@@ -1562,12 +1837,7 @@ class TuyaBLEDevice:
             )
             return False
 
-        command = {
-            33: "passage_on" if value else "passage_off",
-            46: "lock" if value else "manual_lock_false",
-            79: "secure_on" if value else "secure_off",
-        }[dp_id]
-        started = time.monotonic()
+        started = self._begin_350k_command(command)
         async with self._350k_control_lock:
             payload = self._build_350k_v4_bool_data(dp_id, value)
             _LOGGER.debug(
@@ -1629,18 +1899,15 @@ class TuyaBLEDevice:
         """Build a one-byte YD_350K V4 enum configuration write."""
         if dp_id not in (28, 31) or not 0 <= int(value) <= 0xFF:
             raise TuyaBLEDeviceError(0)
-        return (
-            b"\x00\x00\x00\x00\x01"
-            + bytes([dp_id, int(TuyaBLEDataPointType.DT_ENUM.value)])
-            + b"\x00\x01"
-            + bytes([int(value)])
-        )
+        return build_v4_enum_data(dp_id, value)
 
     async def set_350k_enum_datapoint(self, dp_id: int, value: int) -> bool:
         """Write DP28 language or DP31 volume without optimistic state."""
         if self.product_id != "z1dfsaya" or dp_id not in (28, 31):
             raise TuyaBLEDeviceError(0)
+        command = "language" if dp_id == 28 else "volume"
         if self._350k_control_lock.locked():
+            self._record_350k_busy(command)
             _LOGGER.warning(
                 "%s: Ignoring 350K DP%s=%s; another control operation is pending",
                 self.address,
@@ -1648,8 +1915,7 @@ class TuyaBLEDevice:
                 value,
             )
             return False
-        command = "language" if dp_id == 28 else "volume"
-        started = time.monotonic()
+        started = self._begin_350k_command(command)
         async with self._350k_control_lock:
             payload = self._build_350k_v4_enum_data(dp_id, value)
             _LOGGER.debug(
@@ -1711,18 +1977,21 @@ class TuyaBLEDevice:
         """
         if self.product_id != "z1dfsaya":
             raise TuyaBLEDeviceError(0)
+        command = "unlock"
         if self._350k_control_lock.locked():
+            self._record_350k_busy(command)
             _LOGGER.warning(
                 "%s: Ignoring 350K unlock; another control operation is still pending",
                 self.address,
             )
             return False
 
-        command = "unlock"
-        started = time.monotonic()
+        started = self._begin_350k_command(command)
         async with self._350k_control_lock:
             try:
                 payload = self._build_raykube_unlock_v4_data()
+                if not valid_dp71_payload_shape(payload):
+                    raise TuyaBLEDeviceError("unexpected 350K DP71 payload framing")
             except Exception:
                 self._finish_350k_command(command, "unavailable", started)
                 _LOGGER.warning(
@@ -2267,6 +2536,7 @@ class TuyaBLEDevice:
         event_seq = int.from_bytes(data[0:5], "big")
         frame_marker = data[5]
         kind = data[6]
+        self._record_350k_device_report(datapoints)
         self._record_350k_event_sequence(event_seq, datapoints)
 
         if timed:
@@ -3111,6 +3381,7 @@ class TuyaBLEDevice:
             # Any received GATT notification means the authenticated BLE link is
             # active, including fragments that are part of a larger Tuya frame.
             self._350k_last_rx_monotonic = time.monotonic()
+            self._350k_last_rx_seen = True
         if self.product_id == "z1dfsaya":
             self._log_350k_raw(
                 "%s: Packet received: %s", self.address, data.hex()

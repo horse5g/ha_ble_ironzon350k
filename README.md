@@ -53,6 +53,15 @@ The following features are implemented on `experiment/dp46-lock` but should stil
 - [ ] **DP20 event/history correlation** — use the recorder/timeline to correlate manual lock, auto-lock, app lock, fingerprint/PIN unlock, HA lock, and eventual HA unlock without assigning byte semantics prematurely.
 - [ ] **Cold-vs-warm latency comparison** — compare on-demand reconnect operations with an already-warm keepalive session to separate BLE/session setup time from protocol ACK and motor actuation time.
 
+- [ ] **Test-marker service** — verify marker ordering relative to subsequent lock reports and multi-lock targeting.
+- [ ] **Sanitized diagnostic export** — verify service response remains free of credential IDs/raw payloads while retaining enough metadata for offline comparison.
+- [ ] **State freshness/session sensors** — verify Last device report, State age, BLE session state, and Last RX age across sleep/reconnect cycles.
+- [ ] **Command counters** — verify success, timeout/not-acknowledged, BLE error, busy, and reconnect-required accounting.
+- [ ] **Manual Refresh lock status** — verify it wakes/connects on demand, requests status once, and does not alter lock configuration.
+- [ ] **Clear test diagnostics** — verify it clears only local experiment state and never changes physical lock settings.
+- [ ] **HA event-bus events/device triggers** — verify each known access/lock transition fires once per physical event without leaking credential IDs.
+- [ ] **Firmware/protocol diagnostic sensors** — verify values match the device-info handshake and persist through normal sleep cycles.
+
 Already-confirmed controls should not be reclassified as untested: DP33 passage control, DP46 physical lock, DP79 secure-lock control, DP32 secure-lock reported state, and DP47 physical lock state have all been observed working in live testing.
 
 ## Experimental branch
@@ -181,6 +190,55 @@ Each entry stores only bounded metadata: timestamp, rolling 40-bit event sequenc
 RAW, BITMAP, and STRING contents are never retained. Credential/user identifier scalar DPs 12, 13, and 19 are also redacted from this generic timeline even though dedicated access-event diagnostics may expose those IDs elsewhere. The buffer is session-only, resets on integration reload/Home Assistant restart, and never exceeds 25 entries.
 
 For later testing, enable both **Unknown DP recorder** and **Sanitized event timeline**. The unknown-DP recorder summarizes recurring patterns; the timeline preserves ordering between events such as DP20, DP47, DP6, DP68, DP78, and newly discovered IDs.
+
+## Test harness services and automation
+
+The experimental branch includes a local-only test harness intended to make one physical test session useful without requiring raw authenticated captures.
+
+### Test markers
+
+Call `tuya_local_ble.mark_350k_test` immediately before a physical/app/HA action. `label` is required; `note` is optional. Both are user supplied, whitespace-normalized, and bounded. The marker does **not** send anything to the lock; it is inserted into the same sanitized event timeline as a `source: marker` record. Do not place secrets in marker labels or notes.
+
+Example:
+
+```yaml
+action: tuya_local_ble.mark_350k_test
+data:
+  label: fingerprint_unlock
+```
+
+The sanitized timeline capacity is now 50 entries so a complete fingerprint/PIN/manual/HA test matrix is less likely to wrap.
+
+### Sanitized diagnostic export
+
+`tuya_local_ble.export_350k_diagnostics` is a response-producing service. It returns current firmware/protocol metadata, session freshness, reconnect/sequence diagnostics, command counters/timings, safe scalar state, unknown-DP summaries, and the sanitized timeline. It intentionally omits local keys, secKeys, `ble_unlock_check`, credential IDs, and raw/string/bitmap payload contents.
+
+When exactly one 350K is loaded, the target fields can be omitted. With multiple locks, specify `device_id` or `config_entry_id`.
+
+### Local diagnostic buttons
+
+Two disabled-by-default diagnostic buttons are available:
+
+- **Refresh lock status** — explicitly connects/authenticates and requests `DEVICE_STATUS` once. It is user initiated; unlike Keep BLE connection alive it does not run continuously.
+- **Clear test diagnostics** — clears the unknown-DP summary, sanitized timeline, sequence-gap count, command counters, and recent command/transport measurements without changing any physical lock configuration.
+
+### Freshness / session / command diagnostics
+
+Disabled-by-default sensors now include **Last device report**, **State age**, **BLE session state**, **Last BLE RX age**, and **Command counters**. State/RX ages are local freshness measurements; the lock's retained DP47 state is still authoritative for the last reported physical state.
+
+Command counters are session-local and include total attempts, successful ACKs, not-acknowledged/timeouts, BLE errors, not-connected failures, busy/rejected attempts, unavailable commands, generic errors, and commands that required establishing a session first.
+
+### Home Assistant events and device triggers
+
+Known parser events are emitted on the local HA event bus as `tuya_local_ble_350k_event` without credential IDs. Experimental device triggers are available for fingerprint unlock, PIN unlock, Bluetooth unlock, failed fingerprint, failed PIN, locked, and unlocked. These triggers should remain considered experimental until the corresponding physical test checklist is completed.
+
+### Firmware / protocol metadata
+
+Disabled-by-default diagnostic sensors expose device firmware, hardware, and Tuya protocol versions so captures from different 350K firmware revisions can be compared without inspecting raw traffic.
+
+### Protocol regression tests
+
+`tests/test_350k_protocol.py` covers the confirmed DP46 V4 payload, DP28/31 enum framing, non-secret DP71 framing shape, 40-bit sequence wrap/gaps, negotiated GATT write-size selection, timeline redaction/bounds, and marker sanitization. The test module imports only pure helpers and does not require access to the physical lock or private credentials.
 
 ## Suggested test sequence
 

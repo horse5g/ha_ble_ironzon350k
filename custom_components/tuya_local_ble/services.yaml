@@ -1,0 +1,42 @@
+mark_350k_test:
+  name: Mark 350K test
+  description: Add a bounded user label to the sanitized 350K event timeline without sending anything to the lock.
+  fields:
+    device_id:
+      name: Device
+      description: Home Assistant device ID. Optional when exactly one 350K is loaded.
+      selector:
+        device:
+          integration: tuya_local_ble
+    config_entry_id:
+      name: Config entry ID
+      description: Optional explicit Tuya BLE config entry ID.
+      selector:
+        text:
+    label:
+      name: Label
+      required: true
+      example: fingerprint_unlock
+      selector:
+        text:
+    note:
+      name: Note
+      description: Optional short user-supplied note. Do not put secrets here.
+      selector:
+        text:
+
+export_350k_diagnostics:
+  name: Export sanitized 350K diagnostics
+  description: Return a shareable in-memory snapshot with protocol/session diagnostics, safe known values, unknown-DP summaries, and the sanitized event timeline. Keys, credential IDs, and raw payload contents are omitted.
+  fields:
+    device_id:
+      name: Device
+      description: Home Assistant device ID. Optional when exactly one 350K is loaded.
+      selector:
+        device:
+          integration: tuya_local_ble
+    config_entry_id:
+      name: Config entry ID
+      description: Optional explicit Tuya BLE config entry ID.
+      selector:
+        text:

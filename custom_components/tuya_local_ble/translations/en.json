@@ -42,6 +42,12 @@
       },
       "unlock_door": {
         "name": "Unlock door (experimental)"
+      },
+      "refresh_status": {
+        "name": "Refresh lock status"
+      },
+      "clear_diagnostics": {
+        "name": "Clear test diagnostics"
       }
     },
     "number": {
@@ -254,6 +260,30 @@
       },
       "event_timeline_recorder": {
         "name": "Sanitized event timeline"
+      },
+      "last_device_report": {
+        "name": "Last device report"
+      },
+      "state_age": {
+        "name": "State age"
+      },
+      "session_state": {
+        "name": "BLE session state"
+      },
+      "last_rx_age": {
+        "name": "Last BLE RX age"
+      },
+      "command_counters": {
+        "name": "Command counters"
+      },
+      "device_firmware_version": {
+        "name": "Device firmware version"
+      },
+      "device_hardware_version": {
+        "name": "Device hardware version"
+      },
+      "device_protocol_version": {
+        "name": "Tuya protocol version"
       }
     },
     "switch": {
@@ -327,6 +357,17 @@
       "program": {
         "name": "Program: position[/time];..."
       }
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "fingerprint_unlock": "Unlocked by fingerprint",
+      "pin_unlock": "Unlocked by PIN",
+      "bluetooth_unlock": "Unlocked over Bluetooth",
+      "failed_fingerprint": "Fingerprint unlock failed",
+      "failed_pin": "PIN unlock failed",
+      "locked": "Lock became locked",
+      "unlocked": "Lock became unlocked"
     }
   }
 }

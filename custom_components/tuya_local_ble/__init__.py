@@ -23,6 +23,7 @@ from .const import (
     PROTOCOL_LOG_OFF,
 )
 from .devices import TuyaBLECoordinator, TuyaBLEData, get_device_product_info
+from .services import async_register_services
 
 PLATFORMS: list[Platform] = [
     Platform.BUTTON,
@@ -132,6 +133,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         manager,
         coordinator,
     )
+    async_register_services(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
