@@ -1,0 +1,295 @@
+from pathlib import Path
+
+path = Path("custom_components/tuya_local_ble/tuya_ble/tuya_ble.py")
+text = path.read_text()
+
+
+def replace_once(old: str, new: str, label: str) -> None:
+    global text
+    if old not in text:
+        raise SystemExit(f"patch anchor not found: {label}")
+    text = text.replace(old, new, 1)
+
+
+replace_once(
+    """        self._350k_keepalive_enabled = False
+        self._350k_keepalive_task: asyncio.Task | None = None
+        self._350k_last_rx_monotonic = time.monotonic()
+""",
+    """        self._350k_keepalive_enabled = False
+        self._350k_keepalive_task: asyncio.Task | None = None
+        self._350k_last_rx_monotonic = time.monotonic()
+        # Track a recent experimental unlock command only long enough to
+        # correlate the authoritative DP47=True motor-state report.
+        self._350k_unlock_requested_monotonic: float | None = None
+""",
+    "unlock tracking state",
+)
+
+replace_once(
+    """    def _build_packets(
+""",
+    """    def _get_350k_write_chunk_mtu(self) -> int:
+        \"\"\"Return a safe FD50 write-without-response size for the 350K.
+
+        Smart Life negotiates ATT MTU 247 with this lock and sends complete
+        Tuya frames in a single Write Command when they fit. Bleak exposes the
+        usable payload size as max_write_without_response_size. Prefer that
+        negotiated value, capped at 244 bytes (247 minus the ATT header), but
+        fall back to the legacy 20-byte fragmentation path when unavailable.
+        \"\"\"
+        client = self._client
+        if client is None:
+            return GATT_MTU
+        try:
+            characteristic = client.services.get_characteristic(
+                self._characteristic_write
+            )
+            if characteristic is None:
+                return GATT_MTU
+            max_size = int(
+                getattr(characteristic, \"max_write_without_response_size\", GATT_MTU)
+            )
+        except (AttributeError, TypeError, ValueError):
+            return GATT_MTU
+
+        if max_size <= GATT_MTU:
+            return GATT_MTU
+        return min(max_size, 244)
+
+    def _build_packets(
+""",
+    "large-write helper",
+)
+
+replace_once(
+    """                chunk_mtu = GATT_MTU
+                if (
+                    code == TuyaBLECode.FUN_SENDER_DEVICE_INFO
+                    and self.product_id != \"ikphogdj\"
+                    and (
+                        self.product_id in (\"hc7n0urm\")
+                        or self._uses_fd50_channel
+                    )
+                ):
+                    # TuyaOS FD50 locks use MTU exchange and expect DEVICE_INFO
+                    # in one write. ikphogdj is the known 20-byte exception.
+                    chunk_mtu = 244
+""",
+    """                chunk_mtu = GATT_MTU
+                if self.product_id == \"z1dfsaya\" and self._uses_fd50_channel:
+                    # Match Smart Life: after ATT MTU negotiation the 350K
+                    # accepts complete Tuya frames in a single Write Command.
+                    # If the backend cannot report a larger write size, retain
+                    # the proven legacy 20-byte fragmentation behavior.
+                    chunk_mtu = self._get_350k_write_chunk_mtu()
+                elif (
+                    code == TuyaBLECode.FUN_SENDER_DEVICE_INFO
+                    and self.product_id != \"ikphogdj\"
+                    and (
+                        self.product_id in (\"hc7n0urm\")
+                        or self._uses_fd50_channel
+                    )
+                ):
+                    # Existing behavior for other TuyaOS FD50 locks.
+                    chunk_mtu = 244
+""",
+    "350K packet chunk sizing",
+)
+
+replace_once(
+    """    def _disconnected(self, client: BleakClientWithServiceCache) -> None:
+        \"\"\"Disconnected callback.\"\"\"
+        was_paired = self._is_paired
+""",
+    """    def _disconnected(self, client: BleakClientWithServiceCache) -> None:
+        \"\"\"Disconnected callback.\"\"\"
+        self._350k_unlock_requested_monotonic = None
+        was_paired = self._is_paired
+""",
+    "clear unlock tracking on disconnect",
+)
+
+replace_once(
+    """        packets: list[bytes] = self._build_packets(
+            seq_num, code, data, response_to)
+        await self._int_send_packet_while_connected(packets)
+        if future:
+            try:
+                await asyncio.wait_for(future, RESPONSE_WAIT_TIMEOUT)
+            except asyncio.TimeoutError:
+                _LOGGER.error(
+                    \"%s: timeout receiving response, RSSI: %s\",
+                    self.address,
+                    self.rssi,
+                )
+                result = False
+            self._input_expected_responses.pop(seq_num, None)
+
+        return result
+""",
+    """        packets: list[bytes] = self._build_packets(
+            seq_num, code, data, response_to)
+        if self.product_id == \"z1dfsaya\":
+            self._log_350k_raw(
+                \"%s: 350K TX metadata code=%s plaintext_len=%s \"
+                \"gatt_writes=%s write_sizes=%s transport_bytes=%s\",
+                self.address,
+                code.name,
+                len(data),
+                len(packets),
+                [len(packet) for packet in packets],
+                sum(len(packet) for packet in packets),
+            )
+        await self._int_send_packet_while_connected(packets)
+        if future:
+            wait_started = time.monotonic()
+            try:
+                await asyncio.wait_for(future, RESPONSE_WAIT_TIMEOUT)
+            except asyncio.TimeoutError:
+                _LOGGER.error(
+                    \"%s: timeout receiving response, RSSI: %s\",
+                    self.address,
+                    self.rssi,
+                )
+                result = False
+            if self.product_id == \"z1dfsaya\":
+                self._log_350k_event(
+                    \"%s: 350K response code=%s seq=%s acknowledged=%s latency_ms=%.1f\",
+                    self.address,
+                    code.name,
+                    seq_num,
+                    result,
+                    (time.monotonic() - wait_started) * 1000.0,
+                )
+            self._input_expected_responses.pop(seq_num, None)
+
+        return result
+""",
+    "safe TX and ACK diagnostics",
+)
+
+marker = "    async def unlock_350k(self) -> bool:\n"
+next_marker = "    async def linger_connected(self, seconds: int, ping_interval: int = 10) -> None:\n"
+if marker not in text or next_marker not in text:
+    raise SystemExit("unlock function anchors not found")
+before, rest = text.split(marker, 1)
+unlock_body, after = rest.split(next_marker, 1)
+
+old = """            self._log_350k_raw(
+                \"%s: 350K raw experimental DP71 unlock plaintext: %s\",
+                self.address,
+                payload.hex(),
+            )
+"""
+new = """            # Never log the decrypted DP71 authorization body. Even Raw mode
+            # only records safe framing metadata for an unlock attempt.
+            self._log_350k_raw(
+                \"%s: 350K experimental DP71 unlock metadata: \"
+                \"plaintext_len=%s authorization_body=<redacted>\",
+                self.address,
+                len(payload),
+            )
+"""
+if old not in unlock_body:
+    raise SystemExit("DP71 raw-log anchor not found")
+unlock_body = unlock_body.replace(old, new, 1)
+
+old = """                result = await self._send_packet_while_connected(
+                    TuyaBLECode.FUN_SENDER_DPS_V4,
+                    payload,
+                    0,
+                    True,
+                )
+                if not result:
+"""
+new = """                unlock_started = time.monotonic()
+                self._350k_unlock_requested_monotonic = unlock_started
+                result = await self._send_packet_while_connected(
+                    TuyaBLECode.FUN_SENDER_DPS_V4,
+                    payload,
+                    0,
+                    True,
+                )
+                if not result:
+                    if self._350k_unlock_requested_monotonic == unlock_started:
+                        self._350k_unlock_requested_monotonic = None
+"""
+if old not in unlock_body:
+    raise SystemExit("DP71 send anchor not found")
+unlock_body = unlock_body.replace(old, new, 1)
+
+old = """            except BLEAK_EXCEPTIONS:
+                _LOGGER.warning(
+                    \"%s: 350K DP71 unlock failed due to BLE communication error\",
+                    self.address,
+                    exc_info=True,
+                )
+                return False
+            except Exception:
+                _LOGGER.exception(
+                    \"%s: Unexpected error sending experimental 350K DP71 unlock\",
+                    self.address,
+                )
+                return False
+"""
+new = """            except BLEAK_EXCEPTIONS:
+                self._350k_unlock_requested_monotonic = None
+                _LOGGER.warning(
+                    \"%s: 350K DP71 unlock failed due to BLE communication error\",
+                    self.address,
+                    exc_info=True,
+                )
+                return False
+            except Exception:
+                self._350k_unlock_requested_monotonic = None
+                _LOGGER.exception(
+                    \"%s: Unexpected error sending experimental 350K DP71 unlock\",
+                    self.address,
+                )
+                return False
+"""
+if old not in unlock_body:
+    raise SystemExit("DP71 exception anchor not found")
+unlock_body = unlock_body.replace(old, new, 1)
+text = before + marker + unlock_body + next_marker + after
+
+ordinary_marker = "        # Ordinary status/delta:\n"
+if ordinary_marker not in text:
+    raise SystemExit("ordinary 350K parser anchor not found")
+before, ordinary = text.split(ordinary_marker, 1)
+old = """        try:
+            value = decode_value(dp_type, raw_value)
+        except (UnicodeDecodeError, ValueError):
+            value = raw_value
+
+        trailing = data[next_pos:]
+"""
+new = """        try:
+            value = decode_value(dp_type, raw_value)
+        except (UnicodeDecodeError, ValueError):
+            value = raw_value
+
+        if dp_id == 47 and dp_type == TuyaBLEDataPointType.DT_BOOL:
+            unlock_started = self._350k_unlock_requested_monotonic
+            if unlock_started is not None:
+                elapsed = time.monotonic() - unlock_started
+                if elapsed > 15.0:
+                    self._350k_unlock_requested_monotonic = None
+                elif bool(value):
+                    self._log_350k_event(
+                        \"%s: 350K experimental unlock confirmed by DP47=True \"
+                        \"after %.1f ms\",
+                        self.address,
+                        elapsed * 1000.0,
+                    )
+                    self._350k_unlock_requested_monotonic = None
+
+        trailing = data[next_pos:]
+"""
+if old not in ordinary:
+    raise SystemExit("ordinary value decode anchor not found")
+ordinary = ordinary.replace(old, new, 1)
+text = before + ordinary_marker + ordinary
+
+path.write_text(text)
