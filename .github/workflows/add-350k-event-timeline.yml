@@ -1,0 +1,427 @@
+name: Add sanitized 350K event timeline
+
+on:
+  push:
+    branches:
+      - experiment/dp46-lock
+    paths:
+      - .github/workflows/add-350k-event-timeline.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/dp46-lock
+          fetch-depth: 0
+
+      - name: Add sanitized event timeline
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path('custom_components/tuya_local_ble')
+
+          # const.py
+          p = root / 'const.py'
+          s = p.read_text()
+          needle = 'DP_350K_UNKNOWN_DP_COUNT: Final = -3518\n'
+          replacement = needle + 'DP_350K_EVENT_TIMELINE_COUNT: Final = -3519\n'
+          if 'DP_350K_EVENT_TIMELINE_COUNT' not in s:
+              assert needle in s
+              s = s.replace(needle, replacement, 1)
+          p.write_text(s)
+
+          # tuya_ble.py
+          p = root / 'tuya_ble' / 'tuya_ble.py'
+          s = p.read_text()
+
+          needle = '    DP_350K_UNKNOWN_DP_COUNT,\n    PROTOCOL_LOG_EVENTS,\n'
+          replacement = '    DP_350K_UNKNOWN_DP_COUNT,\n    DP_350K_EVENT_TIMELINE_COUNT,\n    PROTOCOL_LOG_EVENTS,\n'
+          if '    DP_350K_EVENT_TIMELINE_COUNT,' not in s:
+              assert needle in s
+              s = s.replace(needle, replacement, 1)
+
+          marker = '''_350K_INTERPRETED_DPS = frozenset({
+    8,   # battery
+'''
+          if '_350K_EVENT_TIMELINE_CAPACITY' not in s:
+              assert marker in s
+              s = s.replace(
+                  marker,
+                  '''_350K_EVENT_TIMELINE_CAPACITY = 25
+# Credential/user identifiers are useful elsewhere in dedicated diagnostics,
+# but the generic timeline deliberately redacts them so it is safer to share.
+_350K_TIMELINE_SENSITIVE_SCALAR_DPS = frozenset({12, 13, 19})
+
+_350K_INTERPRETED_DPS = frozenset({
+    8,   # battery
+''',
+                  1,
+              )
+
+          needle = '''        self._350k_unknown_dps: dict[int, dict[str, object]] = {}
+        self._350k_unknown_dp_overflow = 0
+        # Session-local diagnostics. These intentionally reset when the HA
+'''
+          replacement = '''        self._350k_unknown_dps: dict[int, dict[str, object]] = {}
+        self._350k_unknown_dp_overflow = 0
+        # Bounded, session-local ordering of decoded 350K reports. The timeline
+        # never keeps raw/string/bitmap payload contents or credential IDs.
+        self._350k_event_timeline: list[dict[str, object]] = []
+        # Session-local diagnostics. These intentionally reset when the HA
+'''
+          if 'self._350k_event_timeline' not in s:
+              assert needle in s
+              s = s.replace(needle, replacement, 1)
+
+          needle = '''                self._datapoints._update_from_device(
+                    DP_350K_UNKNOWN_DP_COUNT,
+                    time.time(),
+                    0,
+                    TuyaBLEDataPointType.DT_VALUE,
+                    0,
+                )
+            self._decode_advertisement_data()
+'''
+          replacement = '''                now = time.time()
+                self._datapoints._update_from_device(
+                    DP_350K_UNKNOWN_DP_COUNT,
+                    now,
+                    0,
+                    TuyaBLEDataPointType.DT_VALUE,
+                    0,
+                )
+                self._datapoints._update_from_device(
+                    DP_350K_EVENT_TIMELINE_COUNT,
+                    now,
+                    0,
+                    TuyaBLEDataPointType.DT_VALUE,
+                    0,
+                )
+            self._decode_advertisement_data()
+'''
+          if 'DP_350K_EVENT_TIMELINE_COUNT,\n                    now,' not in s:
+              assert needle in s
+              s = s.replace(needle, replacement, 1)
+
+          anchor = '''    def _record_350k_unknown_dp(
+        self,
+        dp_id: int,
+'''
+          if 'def _record_350k_event_timeline(' not in s:
+              assert anchor in s
+              insert = '''    @property
+    def event_timeline_diagnostics(self) -> dict[str, object]:
+        """Return a JSON-safe snapshot of the recent sanitized 350K timeline."""
+        return {
+            "count": len(self._350k_event_timeline),
+            "capacity": _350K_EVENT_TIMELINE_CAPACITY,
+            "session_only": True,
+            "raw_string_bitmap_contents_stored": False,
+            "credential_scalar_dps_redacted": sorted(
+                _350K_TIMELINE_SENSITIVE_SCALAR_DPS
+            ),
+            "events": [dict(event) for event in self._350k_event_timeline],
+        }
+
+    def _record_350k_event_timeline(
+        self,
+        dp_id: int,
+        dp_type: TuyaBLEDataPointType,
+        raw_value: bytes,
+        value: bytes | bool | int | str,
+        *,
+        timed: bool,
+        timestamp: int | float,
+        event_seq: int,
+        kind: int,
+    ) -> TuyaBLEDataPoint | None:
+        """Record one decoded 350K event without retaining sensitive payloads.
+
+        BOOL/ENUM/VALUE scalars are retained when safe. Credential identifiers
+        (DP12/13/19) are intentionally redacted here even though the integration
+        exposes them separately. RAW/BITMAP/STRING contents are never retained.
+        """
+        if self.product_id != "z1dfsaya":
+            return None
+
+        payload_redacted = False
+        scalar: bool | int | None = None
+        if dp_type == TuyaBLEDataPointType.DT_BOOL:
+            scalar = bool(value)
+        elif dp_type in (TuyaBLEDataPointType.DT_ENUM, TuyaBLEDataPointType.DT_VALUE):
+            if dp_id in _350K_TIMELINE_SENSITIVE_SCALAR_DPS:
+                payload_redacted = True
+            else:
+                scalar = int(value)
+        else:
+            payload_redacted = True
+
+        entry: dict[str, object] = {
+            "timestamp": int(timestamp),
+            "sequence": int(event_seq),
+            "kind": int(kind),
+            "dp": int(dp_id),
+            "type": dp_type.name,
+            "length": len(raw_value),
+            "source": "timed" if timed else "ordinary",
+            "interpreted": dp_id in _350K_INTERPRETED_DPS,
+            "payload_redacted": payload_redacted,
+        }
+        if scalar is not None:
+            entry["scalar"] = scalar
+
+        self._350k_event_timeline.append(entry)
+        if len(self._350k_event_timeline) > _350K_EVENT_TIMELINE_CAPACITY:
+            del self._350k_event_timeline[
+                : len(self._350k_event_timeline) - _350K_EVENT_TIMELINE_CAPACITY
+            ]
+
+        self._datapoints._update_from_device(
+            DP_350K_EVENT_TIMELINE_COUNT,
+            time.time(),
+            0,
+            TuyaBLEDataPointType.DT_VALUE,
+            len(self._350k_event_timeline),
+        )
+        return self._datapoints[DP_350K_EVENT_TIMELINE_COUNT]
+
+'''
+              s = s.replace(anchor, insert + anchor, 1)
+
+          needle = '''            unknown_summary_dp = self._record_350k_unknown_dp(
+                dp_id,
+                dp_type,
+                raw_value,
+                value,
+                timed=True,
+                timestamp=timestamp,
+                event_seq=event_seq,
+            )
+'''
+          replacement = '''            timeline_dp = self._record_350k_event_timeline(
+                dp_id,
+                dp_type,
+                raw_value,
+                value,
+                timed=True,
+                timestamp=timestamp,
+                event_seq=event_seq,
+                kind=kind,
+            )
+            if timeline_dp is not None:
+                datapoints.append(timeline_dp)
+
+            unknown_summary_dp = self._record_350k_unknown_dp(
+                dp_id,
+                dp_type,
+                raw_value,
+                value,
+                timed=True,
+                timestamp=timestamp,
+                event_seq=event_seq,
+            )
+'''
+          if 'timed=True,\n                timestamp=timestamp,\n                event_seq=event_seq,\n                kind=kind,' not in s:
+              assert needle in s
+              s = s.replace(needle, replacement, 1)
+
+          needle = '''        unknown_summary_dp = self._record_350k_unknown_dp(
+            dp_id,
+            dp_type,
+            raw_value,
+            value,
+            timed=False,
+            timestamp=time.time(),
+            event_seq=event_seq,
+        )
+'''
+          replacement = '''        event_timestamp = time.time()
+        timeline_dp = self._record_350k_event_timeline(
+            dp_id,
+            dp_type,
+            raw_value,
+            value,
+            timed=False,
+            timestamp=event_timestamp,
+            event_seq=event_seq,
+            kind=kind,
+        )
+        if timeline_dp is not None:
+            datapoints.append(timeline_dp)
+
+        unknown_summary_dp = self._record_350k_unknown_dp(
+            dp_id,
+            dp_type,
+            raw_value,
+            value,
+            timed=False,
+            timestamp=event_timestamp,
+            event_seq=event_seq,
+        )
+'''
+          if 'timed=False,\n            timestamp=event_timestamp,\n            event_seq=event_seq,\n            kind=kind,' not in s:
+              assert needle in s
+              s = s.replace(needle, replacement, 1)
+
+          p.write_text(s)
+
+          # sensor.py
+          p = root / 'sensor.py'
+          s = p.read_text()
+          needle = '    DP_350K_UNKNOWN_DP_COUNT,\n)\n'
+          replacement = '    DP_350K_UNKNOWN_DP_COUNT,\n    DP_350K_EVENT_TIMELINE_COUNT,\n)\n'
+          if '    DP_350K_EVENT_TIMELINE_COUNT,' not in s:
+              assert needle in s
+              s = s.replace(needle, replacement, 1)
+
+          anchor = '''\n\n@dataclass\nclass TuyaBLECategorySensorMapping:\n'''
+          if 'def event_timeline_getter(' not in s:
+              assert anchor in s
+              insert = '''\n\ndef event_timeline_getter(self: TuyaBLESensor) -> None:
+    """Expose the bounded sanitized 350K event timeline."""
+    snapshot = self._device.event_timeline_diagnostics
+    self._attr_native_value = int(snapshot["count"])
+    self._attr_extra_state_attributes = {
+        "capacity": snapshot["capacity"],
+        "session_only": snapshot["session_only"],
+        "raw_string_bitmap_contents_stored": snapshot[
+            "raw_string_bitmap_contents_stored"
+        ],
+        "credential_scalar_dps_redacted": snapshot[
+            "credential_scalar_dps_redacted"
+        ],
+        "events": snapshot["events"],
+    }
+'''
+              s = s.replace(anchor, insert + anchor, 1)
+
+          needle = '''                TuyaBLESensorMapping(
+                    dp_id=DP_350K_UNKNOWN_DP_COUNT,
+                    getter=unknown_dp_recorder_getter,
+                    description=SensorEntityDescription(
+                        key="unknown_dp_recorder",
+                        icon="mdi:radar",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+'''
+          replacement = needle + '''                TuyaBLESensorMapping(
+                    dp_id=DP_350K_EVENT_TIMELINE_COUNT,
+                    getter=event_timeline_getter,
+                    description=SensorEntityDescription(
+                        key="event_timeline_recorder",
+                        icon="mdi:timeline-clock-outline",
+                        entity_category=EntityCategory.DIAGNOSTIC,
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
+'''
+          if 'key="event_timeline_recorder"' not in s:
+              assert needle in s
+              s = s.replace(needle, replacement, 1)
+          p.write_text(s)
+
+          # strings / translation JSON
+          for rel in ('strings.json', 'translations/en.json'):
+              p = root / rel
+              data = json.loads(p.read_text())
+              sensor = data['entity']['sensor']
+              sensor['event_timeline_recorder'] = {
+                  'name': 'Sanitized event timeline'
+              }
+              p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + '\n')
+
+          # README
+          p = Path('README.md')
+          s = p.read_text()
+          if '## Sanitized event timeline' not in s:
+              needle = '\n## Suggested test sequence\n'
+              assert needle in s
+              section = '''
+## Sanitized event timeline
+
+A second disabled-by-default diagnostic sensor, **Sanitized event timeline**, keeps the most recent 25 decoded 350K V4 datapoint reports in order. This is intended to make later correlation tests possible without requiring Raw protocol logging or a new HCI capture for every experiment.
+
+Each timeline entry contains only bounded metadata:
+
+- receive/device timestamp,
+- rolling 40-bit event sequence,
+- event `kind`, DP number, Tuya type, and payload length,
+- `source: ordinary` or `source: timed`,
+- whether the DP is already interpreted by this project,
+- a safe BOOL / ENUM / VALUE scalar when appropriate,
+- `payload_redacted: true` when contents are deliberately omitted.
+
+RAW, BITMAP, and STRING payload contents are never stored in the timeline. Credential/user identifier scalar DPs 12, 13, and 19 are also redacted from this generic timeline even though dedicated access-event diagnostics may expose their IDs elsewhere. The buffer is session-only, resets on integration reload/Home Assistant restart, and never exceeds 25 entries.
+
+Example:
+
+```yaml
+state: 25
+capacity: 25
+events:
+  - timestamp: 1790620000
+    sequence: 2310
+    kind: 0
+    dp: 47
+    type: DT_BOOL
+    length: 1
+    source: ordinary
+    interpreted: true
+    scalar: true
+    payload_redacted: false
+  - timestamp: 1790620002
+    sequence: 2311
+    kind: 0
+    dp: 20
+    type: DT_RAW
+    length: 5
+    source: timed
+    interpreted: true
+    payload_redacted: true
+```
+
+For later testing, enable both **Unknown DP recorder** and **Sanitized event timeline**. The unknown-DP recorder summarizes recurring patterns; the timeline preserves ordering between events such as DP20, DP47, DP6, DP68, DP78, and any newly discovered IDs.
+'''
+              s = s.replace(needle, '\n' + section + needle, 1)
+          p.write_text(s)
+          PY
+
+      - name: Validate
+        shell: bash
+        run: |
+          python -m compileall -q custom_components/tuya_local_ble
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for p in (
+              Path('custom_components/tuya_local_ble/strings.json'),
+              Path('custom_components/tuya_local_ble/translations/en.json'),
+          ):
+              json.loads(p.read_text())
+          PY
+          git diff --check
+          grep -q 'DP_350K_EVENT_TIMELINE_COUNT' custom_components/tuya_local_ble/const.py
+          grep -q 'def _record_350k_event_timeline' custom_components/tuya_local_ble/tuya_ble/tuya_ble.py
+          grep -q 'credential_scalar_dps_redacted' custom_components/tuya_local_ble/tuya_ble/tuya_ble.py
+          grep -q 'event_timeline_recorder' custom_components/tuya_local_ble/sensor.py
+          grep -q 'Sanitized event timeline' README.md
+
+      - name: Commit result
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md custom_components/tuya_local_ble
+          git rm .github/workflows/add-350k-event-timeline.yml
+          git commit -m 'Add sanitized 350K event timeline'
+          git push origin HEAD:experiment/dp46-lock
