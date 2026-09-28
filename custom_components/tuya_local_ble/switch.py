@@ -553,53 +553,6 @@ class TuyaBLESwitch(TuyaBLEEntity, SwitchEntity):
 
 
 
-class TuyaBLEVerboseLoggingSwitch(TuyaBLEEntity, SwitchEntity, RestoreEntity):
-    """Local-only switch controlling extra 350K protocol diagnostics."""
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        coordinator: DataUpdateCoordinator,
-        device: TuyaBLEDevice,
-        product: TuyaBLEProductInfo,
-    ) -> None:
-        super().__init__(
-            hass,
-            coordinator,
-            device,
-            product,
-            SwitchEntityDescription(
-                key="verbose_logging",
-                icon="mdi:bug-outline",
-                entity_category=EntityCategory.CONFIG,
-            ),
-        )
-
-    @property
-    def is_on(self) -> bool:
-        return self._device.verbose_logging
-
-    @property
-    def available(self) -> bool:
-        # This is a local integration setting, so it remains usable even when
-        # the battery lock is asleep or temporarily unreachable.
-        return True
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        last_state = await self.async_get_last_state()
-        if last_state is not None:
-            self._device.set_verbose_logging(last_state.state == STATE_ON)
-
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        self._device.set_verbose_logging(True)
-        self.async_write_ha_state()
-
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        self._device.set_verbose_logging(False)
-        self.async_write_ha_state()
-
-
 class TuyaBLEKeepAliveSwitch(TuyaBLEEntity, SwitchEntity, RestoreEntity):
     """Local-only switch keeping the YD_350K authenticated BLE session warm."""
 
@@ -660,12 +613,6 @@ async def async_setup_entry(
     if data.device.product_id == "z1dfsaya":
         entities.extend(
             [
-                TuyaBLEVerboseLoggingSwitch(
-                    hass,
-                    data.coordinator,
-                    data.device,
-                    data.product,
-                ),
                 TuyaBLEKeepAliveSwitch(
                     hass,
                     data.coordinator,

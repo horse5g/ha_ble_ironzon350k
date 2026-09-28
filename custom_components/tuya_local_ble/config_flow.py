@@ -25,7 +25,12 @@ from .tuya_ble import SERVICE_UUID, TuyaBLEDeviceCredentials
 
 from .const import (
     CONF_KEEP_CONNECTED,
+    CONF_PROTOCOL_LOG_LEVEL,
     DOMAIN,
+    PROTOCOL_LOG_EVENTS,
+    PROTOCOL_LOG_LEVELS,
+    PROTOCOL_LOG_OFF,
+    PROTOCOL_LOG_RAW,
 )
 from .devices import TuyaBLEData, get_device_readable_name
 from .keyman import HASSTuyaBLEDeviceManager
@@ -158,6 +163,12 @@ class TuyaBLEOptionsFlow(OptionsFlow):
             options[CONF_KEEP_CONNECTED] = bool(
                 user_input.get(CONF_KEEP_CONNECTED, False)
             )
+            protocol_log_level = str(
+                user_input.get(CONF_PROTOCOL_LOG_LEVEL, PROTOCOL_LOG_OFF)
+            )
+            if protocol_log_level not in PROTOCOL_LOG_LEVELS:
+                protocol_log_level = PROTOCOL_LOG_OFF
+            options[CONF_PROTOCOL_LOG_LEVEL] = protocol_log_level
             return self.async_create_entry(title="", data=options)
 
         return self.async_show_form(
@@ -170,6 +181,20 @@ class TuyaBLEOptionsFlow(OptionsFlow):
                             self.config_entry.options.get(CONF_KEEP_CONNECTED, False)
                         ),
                     ): bool,
+                    vol.Optional(
+                        CONF_PROTOCOL_LOG_LEVEL,
+                        default=str(
+                            self.config_entry.options.get(
+                                CONF_PROTOCOL_LOG_LEVEL, PROTOCOL_LOG_OFF
+                            )
+                        ),
+                    ): vol.In(
+                        {
+                            PROTOCOL_LOG_OFF: "Off",
+                            PROTOCOL_LOG_EVENTS: "Parsed events",
+                            PROTOCOL_LOG_RAW: "Raw frames + events",
+                        }
+                    ),
                 }
             ),
         )

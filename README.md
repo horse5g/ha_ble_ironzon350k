@@ -16,7 +16,7 @@ Working in the current test setup:
 - Secure-lock state reporting via DP32.
 - Secure-lock control via DP79 (current working hypothesis based on physical state correlation; still being tested).
 - Access-event diagnostics for fingerprint/PIN/failure events.
-- Optional verbose 350K protocol logging.
+- Configurable 350K protocol logging under the integration Configure dialog (Off / Parsed events / Raw frames + events).
 - Optional BLE connection keeper for low-latency controls through an ESPHome Bluetooth proxy.
 
 Still experimental / not enabled as a normal HA lock control:

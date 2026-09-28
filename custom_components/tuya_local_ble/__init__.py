@@ -16,7 +16,11 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from .tuya_ble import TuyaBLEDevice
 
 from .keyman import HASSTuyaBLEDeviceManager
-from .const import DOMAIN
+from .const import (
+    CONF_PROTOCOL_LOG_LEVEL,
+    DOMAIN,
+    PROTOCOL_LOG_OFF,
+)
 from .devices import TuyaBLECoordinator, TuyaBLEData, get_device_product_info
 
 PLATFORMS: list[Platform] = [
@@ -46,6 +50,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     manager = HASSTuyaBLEDeviceManager(hass, entry.options.copy())
     device = TuyaBLEDevice(manager, ble_device)
     await device.initialize()
+    if device.product_id == "z1dfsaya":
+        device.set_protocol_log_level(
+            str(entry.options.get(CONF_PROTOCOL_LOG_LEVEL, PROTOCOL_LOG_OFF))
+        )
     product_info = get_device_product_info(device)
 
     coordinator = TuyaBLECoordinator(hass, device)
@@ -132,7 +140,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload when options (e.g. keep_connected) change."""
+    """Reload when integration options change."""
     await hass.config_entries.async_reload(entry.entry_id)
 
 

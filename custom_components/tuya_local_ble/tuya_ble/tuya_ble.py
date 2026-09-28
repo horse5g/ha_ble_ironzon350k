@@ -27,6 +27,10 @@ from ..const import (
     DP_350K_LAST_ACCESS_EVENT_TIME,
     DP_350K_LAST_CREDENTIAL_ID,
     DP_350K_LAST_LOCK_RECORD,
+    PROTOCOL_LOG_EVENTS,
+    PROTOCOL_LOG_LEVELS,
+    PROTOCOL_LOG_OFF,
+    PROTOCOL_LOG_RAW,
 )
 
 from .const import (
@@ -281,10 +285,9 @@ class TuyaBLEDevice:
         # self._input_future: asyncio.Future[int] | None = None
 
         self._datapoints = TuyaBLEDataPoints(self)
-
-        # Local-only UI-controlled protocol diagnostics for the 350K. This does
-        # not write anything to the lock and is intentionally off by default.
-        self._verbose_logging = False
+        # Per-entry protocol diagnostics for the 350K. Controlled from the
+        # integration Options flow rather than exposed as a lock entity.
+        self._protocol_log_level = PROTOCOL_LOG_OFF
 
         # Optional YD_350K connection keeper. The lock is much more responsive
         # when the authenticated BLE session is already alive, so when enabled
@@ -495,25 +498,49 @@ class TuyaBLEDevice:
         return self._datapoints
 
     @property
+    def protocol_log_level(self) -> str:
+        """Return the configured YD_350K protocol diagnostic level."""
+        return self._protocol_log_level
+
+    @property
     def verbose_logging(self) -> bool:
-        """Return whether local 350K protocol diagnostics are enabled."""
-        return self._verbose_logging
+        """Compatibility view for older callers: any diagnostics enabled."""
+        return self._protocol_log_level != PROTOCOL_LOG_OFF
 
     def set_verbose_logging(self, enabled: bool) -> None:
-        """Enable or disable local 350K protocol diagnostics."""
-        enabled = bool(enabled)
-        if self._verbose_logging == enabled:
-            return
-        self._verbose_logging = enabled
-        _LOGGER.info(
-            "%s: 350K verbose protocol logging %s",
-            self.address,
-            "enabled" if enabled else "disabled",
+        """Compatibility setter used by older builds."""
+        self.set_protocol_log_level(
+            PROTOCOL_LOG_EVENTS if enabled else PROTOCOL_LOG_OFF
         )
 
-    def _log_350k_verbose(self, message: str, *args: object) -> None:
-        """Emit opt-in 350K protocol detail without changing global log level."""
-        if self.product_id == "z1dfsaya" and self._verbose_logging:
+    def set_protocol_log_level(self, level: str) -> None:
+        """Set YD_350K diagnostics: off, parsed events, or full raw frames."""
+        level = str(level).lower()
+        if level not in PROTOCOL_LOG_LEVELS:
+            level = PROTOCOL_LOG_OFF
+        if self._protocol_log_level == level:
+            return
+        self._protocol_log_level = level
+        _LOGGER.info(
+            "%s: 350K protocol logging level set to %s",
+            self.address,
+            level,
+        )
+
+    def _log_350k_event(self, message: str, *args: object) -> None:
+        """Emit parsed DP/event diagnostics at events and raw levels."""
+        if (
+            self.product_id == "z1dfsaya"
+            and self._protocol_log_level in (PROTOCOL_LOG_EVENTS, PROTOCOL_LOG_RAW)
+        ):
+            _LOGGER.info(message, *args)
+
+    def _log_350k_raw(self, message: str, *args: object) -> None:
+        """Emit full protocol frames only at the raw diagnostic level."""
+        if (
+            self.product_id == "z1dfsaya"
+            and self._protocol_log_level == PROTOCOL_LOG_RAW
+        ):
             _LOGGER.info(message, *args)
 
     @property
@@ -1100,6 +1127,11 @@ class TuyaBLEDevice:
                 dp_id,
                 value,
             )
+            self._log_350k_raw(
+                "%s: 350K raw FUN_SENDER_DPS_V4 plaintext: %s",
+                self.address,
+                payload.hex(),
+            )
             try:
                 await self._ensure_connected()
                 if (
@@ -1338,7 +1370,11 @@ class TuyaBLEDevice:
         for packet in packets:
             if self._client:
                 try:
-                    if self.product_id != "z1dfsaya" or self._verbose_logging:
+                    if self.product_id == "z1dfsaya":
+                        self._log_350k_raw(
+                            "%s: Sending packet: %s", self.address, packet.hex()
+                        )
+                    else:
                         _LOGGER.debug(
                             "%s: Sending packet: %s", self.address, packet.hex()
                         )
@@ -1619,7 +1655,7 @@ class TuyaBLEDevice:
             try:
                 dp_type = TuyaBLEDataPointType(type_value)
             except ValueError:
-                self._log_350k_verbose(
+                self._log_350k_event(
                     "%s: 350K timed event seq=0x%010x kind=0x%02x "
                     "timestamp=%s dp=%s unknown_type=%s len=%s raw=%s",
                     self.address,
@@ -1640,7 +1676,7 @@ class TuyaBLEDevice:
                 value = raw_value
 
             trailing = data[next_pos:]
-            self._log_350k_verbose(
+            self._log_350k_event(
                 "%s: 350K timed event seq=0x%010x kind=0x%02x "
                 "timestamp=%s dp=%s type=%s len=%s raw=%s value=%r%s",
                 self.address,
@@ -1749,7 +1785,7 @@ class TuyaBLEDevice:
         try:
             dp_type = TuyaBLEDataPointType(type_value)
         except ValueError:
-            self._log_350k_verbose(
+            self._log_350k_event(
                 "%s: 350K V4 seq=0x%010x kind=0x%02x dp=%s "
                 "unknown_type=%s len=%s raw=%s",
                 self.address,
@@ -1769,7 +1805,7 @@ class TuyaBLEDevice:
             value = raw_value
 
         trailing = data[next_pos:]
-        self._log_350k_verbose(
+        self._log_350k_event(
             "%s: 350K V4 seq=0x%010x kind=0x%02x dp=%s "
             "type=%s len=%s raw=%s value=%r%s",
             self.address,
@@ -2209,7 +2245,7 @@ class TuyaBLEDevice:
 
             case TuyaBLECode.FUN_RECEIVE_DP_V4:
                 if self.product_id == "z1dfsaya":
-                    self._log_350k_verbose(
+                    self._log_350k_raw(
                         "%s: 350K raw %s plaintext: %s",
                         self.address,
                         code.name,
@@ -2225,7 +2261,7 @@ class TuyaBLEDevice:
 
             case TuyaBLECode.FUN_RECEIVE_TIME_DP_V4:
                 if self.product_id == "z1dfsaya":
-                    self._log_350k_verbose(
+                    self._log_350k_raw(
                         "%s: 350K raw %s plaintext: %s",
                         self.address,
                         code.name,
@@ -2326,8 +2362,11 @@ class TuyaBLEDevice:
             # Any received GATT notification means the authenticated BLE link is
             # active, including fragments that are part of a larger Tuya frame.
             self._350k_last_rx_monotonic = time.monotonic()
-
-        if self.product_id != "z1dfsaya" or self._verbose_logging:
+        if self.product_id == "z1dfsaya":
+            self._log_350k_raw(
+                "%s: Packet received: %s", self.address, data.hex()
+            )
+        else:
             _LOGGER.debug("%s: Packet received: %s", self.address, data.hex())
 
         pos: int = 0

@@ -20,12 +20,14 @@
     "step": {
       "init": {
         "title": "Tuya BLE options",
-        "description": "Optional connection behavior. Keep connected is mainly useful for battery locks (e.g. Raykube) when you want live reverse sync; default is off.",
+        "description": "Integration options. Keep connected controls persistent BLE behavior; 350K protocol logging controls local diagnostic detail without changing Home Assistant's global logger level.",
         "data": {
-          "keep_connected": "Keep connected (24/7)"
+          "keep_connected": "Keep connected (24/7)",
+          "protocol_log_level": "350K protocol logging"
         },
         "data_description": {
-          "keep_connected": "When enabled, maintain a persistent BLE session with periodic keepalive (like Gimdow). When disabled, connect on demand and use advertisement refresh. Prefer ESPHome BLE proxies if enabling this."
+          "keep_connected": "When enabled, maintain a persistent BLE session with periodic keepalive (like Gimdow). When disabled, connect on demand and use advertisement refresh. Prefer ESPHome BLE proxies if enabling this.",
+          "protocol_log_level": "Off: no extra 350K diagnostics. Parsed events: decoded datapoints and timed events. Raw frames + events: also include encrypted BLE fragments and decrypted Tuya V4 payloads. Raw mode may contain credential IDs or other lock event data, so use it only while troubleshooting."
         }
       }
     }
@@ -244,9 +246,6 @@
       },
       "water_valve": {
         "name": "Irrigation valve"
-      },
-      "verbose_logging": {
-        "name": "Verbose protocol logging"
       },
       "passage_mode_control": {
         "name": "Passage mode"

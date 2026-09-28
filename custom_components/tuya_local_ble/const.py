@@ -22,6 +22,19 @@ CONF_BLE_UNLOCK_CHECK: Final = "ble_unlock_check"
 # Default off: connect on demand + advertisement refresh. On: keepalive like rlyxv7pe.
 CONF_KEEP_CONNECTED: Final = "keep_connected"
 
+# Per-config-entry diagnostics for the YD_350K. Kept separate from Home
+# Assistant's global logger level so parsed lock traffic can be enabled without
+# enabling DEBUG for the entire integration.
+CONF_PROTOCOL_LOG_LEVEL: Final = "protocol_log_level"
+PROTOCOL_LOG_OFF: Final = "off"
+PROTOCOL_LOG_EVENTS: Final = "events"
+PROTOCOL_LOG_RAW: Final = "raw"
+PROTOCOL_LOG_LEVELS: Final = (
+    PROTOCOL_LOG_OFF,
+    PROTOCOL_LOG_EVENTS,
+    PROTOCOL_LOG_RAW,
+)
+
 CONF_CRED_FILE = DOMAIN + "/devices.json"
 
 BATTERY_STATE_LOW: Final = "low"

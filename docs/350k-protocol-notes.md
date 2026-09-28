@@ -75,3 +75,8 @@ Current candidates:
 - DP71 raw BLE unlock/check flow for unlock.
 
 The exact official-app unlock payload still needs to be decoded/validated before enabling remote unlock.
+
+
+## Protocol logging
+
+The old per-lock `Verbose protocol logging` switch has been removed. Configure logging from **Settings → Devices & services → Tuya BLE → Configure**. Levels are `Off`, `Parsed events`, and `Raw frames + events`. Raw mode can expose lock event details in logs and should normally remain off.
