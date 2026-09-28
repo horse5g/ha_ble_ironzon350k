@@ -116,6 +116,15 @@ mapping: dict[str, TuyaBLECategoryButtonMapping] = {
                         icon="mdi:lock",
                     ),
                 ),
+                TuyaBLEButtonMapping(
+                    dp_id=71,
+                    description=ButtonEntityDescription(
+                        key="unlock_door",
+                        translation_key="unlock_door",
+                        icon="mdi:lock-open",
+                        entity_registry_enabled_default=False,
+                    ),
+                ),
             ],
         },
     ),
@@ -172,6 +181,12 @@ class TuyaBLEButton(TuyaBLEEntity, ButtonEntity):
             self._hass.create_task(
                 self._device.set_350k_bool_datapoint(46, True)
             )
+            return
+
+        if self._device.product_id == "z1dfsaya" and self._mapping.dp_id == 71:
+            # Experimental authenticated BLE unlock. The command ACK is not
+            # treated as proof of an unlocked door; DP47 remains authoritative.
+            self._hass.create_task(self._device.unlock_350k())
             return
 
         datapoint = self._device.datapoints.get_or_create(

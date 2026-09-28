@@ -14,15 +14,15 @@ Working in the current test setup:
 - Physical lock-state reporting (DP47; `true` = unlocked, `false` = locked).
 - Passage/automatic-lock control via DP33.
 - Secure-lock state reporting via DP32.
-- Secure-lock control via DP79 (current working hypothesis based on physical state correlation; still being tested).
+- Secure-lock control via DP79 (confirmed in live testing).
 - Access-event diagnostics for fingerprint/PIN/failure events.
 - Configurable 350K protocol logging under the integration Configure dialog (Off / Parsed events / Raw frames + events).
 - Optional BLE connection keeper for low-latency controls through an ESPHome Bluetooth proxy.
 
 Still experimental / not enabled as a normal HA lock control:
 
-- Remote lock command (DP46 is the likely Tuya `manual_lock` command and still needs live validation here).
-- Remote unlock command (expected to use the lock's BLE-unlock/check flow, not `DP46=false`; exact payload still needs to be confirmed from the official app traffic).
+- Remote lock command via DP46=`true` (confirmed in live testing).
+- Remote unlock via an experimental DP71 / `ble_unlock_check` V4 command. The framing is inferred from previous Smart Life captures and must still be physically validated on the 350K. The test button is disabled by default in the entity registry.
 
 ## Repository policy
 
@@ -43,12 +43,12 @@ Credentials and captures stay out of GitHub. Do **not** commit `devices.json`, l
 | 31 | Beep volume |
 | 32 | Secure/reverse-lock **reported state** |
 | 33 | Passage / automatic-lock suppression control |
-| 46 | Tuya `manual_lock` command candidate; not enabled yet |
+| 46 | Tuya `manual_lock`; `true` is confirmed to physically lock |
 | 47 | Physical lock state (`true` unlocked, `false` locked) |
 | 68 | Special function enum |
-| 71 | BLE unlock/check raw payload candidate; not enabled yet |
+| 71 | BLE unlock/check raw command; experimental 19-byte unlock-check payload under test |
 | 78 | Special control boolean; exact role unknown |
-| 79 | Secure-lock control candidate; correlates with DP32 physical state |
+| 79 | Secure-lock control; confirmed, with DP32 as reported secure state |
 
 ## BLE proxy notes
 

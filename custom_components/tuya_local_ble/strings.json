@@ -38,7 +38,10 @@
         "name": "Push"
       },
       "lock_door": {
-        "name": "Lock door (experimental)"
+        "name": "Lock door"
+      },
+      "unlock_door": {
+        "name": "Unlock door (experimental)"
       }
     },
     "number": {

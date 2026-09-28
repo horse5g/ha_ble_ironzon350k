@@ -1184,6 +1184,89 @@ class TuyaBLEDevice:
                 )
                 return False
 
+    async def unlock_350k(self) -> bool:
+        """Send the experimental YD_350K BLE unlock command.
+
+        The command uses the same 28-byte DP71/0x47 V4 unlock-check payload
+        format already implemented for related TuyaOS FD50 locks. The previous
+        Smart Life capture strongly matches this framing by encrypted GATT write
+        length, but the 350K path remains experimental until physically tested.
+
+        No lock state is changed optimistically. DP47 remains authoritative.
+        """
+        if self.product_id != "z1dfsaya":
+            raise TuyaBLEDeviceError(0)
+
+        if self._350k_control_lock.locked():
+            _LOGGER.warning(
+                "%s: Ignoring 350K unlock; another control operation is still pending",
+                self.address,
+            )
+            return False
+
+        async with self._350k_control_lock:
+            try:
+                payload = self._build_raykube_unlock_v4_data()
+            except Exception:
+                _LOGGER.warning(
+                    "%s: 350K unlock unavailable; ble_unlock_check is missing or invalid",
+                    self.address,
+                )
+                return False
+
+            _LOGGER.debug(
+                "%s: Sending experimental 350K DP71 unlock command",
+                self.address,
+            )
+            self._log_350k_raw(
+                "%s: 350K raw experimental DP71 unlock plaintext: %s",
+                self.address,
+                payload.hex(),
+            )
+
+            try:
+                await self._ensure_connected()
+                if (
+                    self._expected_disconnect
+                    or self._client is None
+                    or not self._client.is_connected
+                ):
+                    _LOGGER.warning(
+                        "%s: 350K DP71 unlock aborted; device is not connected",
+                        self.address,
+                    )
+                    return False
+
+                result = await self._send_packet_while_connected(
+                    TuyaBLECode.FUN_SENDER_DPS_V4,
+                    payload,
+                    0,
+                    True,
+                )
+                if not result:
+                    _LOGGER.warning(
+                        "%s: 350K DP71 unlock was not acknowledged",
+                        self.address,
+                    )
+                    return False
+
+                # A protocol ACK only confirms receipt. The motor/door state is
+                # still determined exclusively by the later DP47 notification.
+                return True
+            except BLEAK_EXCEPTIONS:
+                _LOGGER.warning(
+                    "%s: 350K DP71 unlock failed due to BLE communication error",
+                    self.address,
+                    exc_info=True,
+                )
+                return False
+            except Exception:
+                _LOGGER.exception(
+                    "%s: Unexpected error sending experimental 350K DP71 unlock",
+                    self.address,
+                )
+                return False
+
     async def linger_connected(self, seconds: int, ping_interval: int = 10) -> None:
         """Stay connected for a bounded window, purely passive - no requests
         of our own. Sending our own traffic here risks colliding with the

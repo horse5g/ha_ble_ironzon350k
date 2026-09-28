@@ -80,3 +80,8 @@ The exact official-app unlock payload still needs to be decoded/validated before
 ## Protocol logging
 
 The old per-lock `Verbose protocol logging` switch has been removed. Configure logging from **Settings → Devices & services → Tuya BLE → Configure**. Levels are `Off`, `Parsed events`, and `Raw frames + events`. Raw mode can expose lock event details in logs and should normally remain off.
+
+
+## Experimental DP71 unlock
+
+Previous Smart Life HCI captures showed the first app unlock after a fresh BLE connection as a 68-byte GATT write. That size matches the existing TuyaOS FD50 DP71 (`0x47`) unlock-check command exactly after Tuya header/CRC, AES padding, security flag, IV, and BLE packet framing. The experimental Home Assistant button therefore reuses the existing device-specific `ble_unlock_check` transformation and sends it through `FUN_SENDER_DPS_V4`. The button is disabled by default and does not change state optimistically; DP47 remains authoritative.
