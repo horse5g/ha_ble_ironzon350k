@@ -1,27 +1,19 @@
 """The Tuya BLE integration."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-
+import asyncio
+from contextlib import suppress
+from dataclasses import dataclass, replace
 import logging
-from typing import Callable
-from datetime import datetime, timedelta
-from threading import Event, Thread
 import time
+from typing import Any, Callable
 
-from homeassistant.components.lock import (
-    LockEntityDescription,
-    LockEntity,
-    LockState,
-)
+from homeassistant.components.lock import LockEntity, LockEntityDescription, LockState
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-
-from homeassistant.const import (
-    STATE_UNKNOWN,
-)
 
 from .const import CONF_KEEP_CONNECTED, DOMAIN
 from .devices import TuyaBLEData, TuyaBLEEntity, TuyaBLEProductInfo
@@ -31,7 +23,6 @@ _LOGGER = logging.getLogger(__name__)
 
 TuyaBLELockIsAvailable = Callable[["TuyaBLELock", TuyaBLEProductInfo], bool] | None
 
-from typing import Any
 
 @dataclass
 class TuyaBLELockMapping:
@@ -47,15 +38,6 @@ class TuyaBLELockMapping:
     is_available: TuyaBLELockIsAvailable = None
     value_means_locked: bool = False
 
-@dataclass
-class TuyaBLELockMapping(TuyaBLELockMapping):
-    description: LockEntityDescription = field(
-        default_factory=lambda: LockEntityDescription(
-            key="push",
-            translation_key="push",
-        )
-    )
-    is_available: TuyaBLELockIsAvailable = 0
 
 @dataclass
 class TuyaBLECategoryLockMapping:
@@ -66,8 +48,7 @@ class TuyaBLECategoryLockMapping:
 mapping: dict[str, TuyaBLECategoryLockMapping] = {
     "jtmspro": TuyaBLECategoryLockMapping(
         products={
-            "z1dfsaya":  # Ironzon / YD_350K experimental lock entity
-            [
+            "z1dfsaya": [  # Ironzon / YD_350K experimental lock entity
                 TuyaBLELockMapping(
                     dp_id_unlock=71,
                     dp_id_lock=46,
@@ -83,113 +64,84 @@ mapping: dict[str, TuyaBLECategoryLockMapping] = {
                     ),
                 ),
             ],
-            "rlyxv7pe":  # Gimdow Smart Lock
-            [
+            "rlyxv7pe": [  # Gimdow Smart Lock
                 TuyaBLELockMapping(
                     dp_id_unlock=6,
                     dp_id_lock=46,
                     dp_id=47,
-                    # refer to sdk, dp 52 is for deleting temp password
-                    # should be safe as a dummy keep alive message
+                    # DP52 is used as the legacy no-op keepalive datapoint.
                     dp_id_nop=52,
                     keep_connect=True,
                     keep_connect_timer=60,
-                    description=LockEntityDescription(
-                        key="manual_lock"
-                    ),
+                    description=LockEntityDescription(key="manual_lock"),
                 ),
             ],
-            "hc7n0urm":  # Raykube A1 Ultra / A1 Pro Max TuyaOS FD50 lock
-            [
+            "hc7n0urm": [  # Raykube A1 Ultra / A1 Pro Max TuyaOS FD50 lock
                 TuyaBLELockMapping(
                     dp_id_unlock=6,
                     dp_id_lock=46,
                     # V4 events are parsed, but the full state model is still unknown.
-                    # The entity reflects successful remote unlock after V4 ACK.
                     dp_id=118,
                     dp_id_nop=52,
                     keep_connect=False,
                     keep_connect_timer=60,
-                    description=LockEntityDescription(
-                        key="manual_lock"
-                    ),
+                    description=LockEntityDescription(key="manual_lock"),
                 ),
             ],
-            "y2yaegze":  # CTL20H SmartLock - TuyaOS FD50
-            [
+            "y2yaegze": [  # CTL20H SmartLock - TuyaOS FD50
                 TuyaBLELockMapping(
                     dp_id_unlock=6,
                     dp_id_lock=46,
-                    # Physical DP47 is mirrored to synthetic DP118 by the
-                    # Raykube V4 parser. 0=locked, 1=unlocked.
+                    # Physical DP47 is mirrored to synthetic DP118 by the parser.
                     dp_id=118,
                     dp_id_nop=52,
                     keep_connect=False,
                     keep_connect_timer=60,
-                    description=LockEntityDescription(
-                        key="manual_lock"
-                    ),
+                    description=LockEntityDescription(key="manual_lock"),
                 ),
             ],
-            "ikphogdj":  # HL Knob-2, TuyaOS FD50 transport
-            [
+            "ikphogdj": [  # HL Knob-2, TuyaOS FD50 transport
                 TuyaBLELockMapping(
                     dp_id_unlock=6,
                     dp_id_lock=46,
-                    # Confirmed via HCI capture: dp 47 (lock_motor_state) is
-                    # the reliable state signal, including autonomous
-                    # auto-lock events - dp 46 (manual_lock) only fires on
-                    # commanded actions. Polarity confirmed twice: dp47=1
-                    # after unlock, dp47=0 after lock/auto-lock.
+                    # DP47 is the reliable physical state signal.
                     dp_id=47,
                     value_means_locked=False,
                     dp_id_nop=52,
                     keep_connect=False,
                     keep_connect_timer=60,
-                    description=LockEntityDescription(
-                        key="manual_lock"
-                    ),
+                    description=LockEntityDescription(key="manual_lock"),
                 ),
             ],
-            "c6hfl8bt":  # MYPIN HS0358 cabinet lock, TuyaOS FD50 transport
-            [
+            "c6hfl8bt": [  # MYPIN HS0358 cabinet lock, TuyaOS FD50 transport
                 TuyaBLELockMapping(
                     dp_id_unlock=6,
                     dp_id_lock=46,
-                    # Same standardized jtmspro/FD50 DP schema as ikphogdj/
-                    # hc7n0urm (dp 47 = lock_motor_state); polarity not yet
-                    # confirmed against physical unlock/lock for this device.
                     dp_id=47,
                     value_means_locked=False,
                     dp_id_nop=52,
                     keep_connect=False,
                     keep_connect_timer=60,
-                    description=LockEntityDescription(
-                        key="manual_lock"
-                    ),
+                    description=LockEntityDescription(key="manual_lock"),
                 ),
             ],
         }
-    ), 
+    ),
 }
 
 
-def get_mapping_by_device(device: TuyaBLEDevice) -> list[TuyaBLECategoryLockMapping]:
+def get_mapping_by_device(device: TuyaBLEDevice) -> list[TuyaBLELockMapping]:
     category = mapping.get(device.category)
-    if category is not None and category.products is not None:
-        product_mapping = category.products.get(device.product_id)
-        if product_mapping is not None:
-            return product_mapping
-        if category.mapping is not None:
-            return category.mapping
-        else:
-            return []
-    else:
+    if category is None or category.products is None:
         return []
+    product_mapping = category.products.get(device.product_id)
+    if product_mapping is not None:
+        return product_mapping
+    return category.mapping or []
 
 
 class TuyaBLELock(TuyaBLEEntity, LockEntity):
-    """Representation of a Tuya BLE Lock."""
+    """Representation of a Tuya BLE lock."""
 
     def __init__(
         self,
@@ -202,41 +154,43 @@ class TuyaBLELock(TuyaBLEEntity, LockEntity):
         super().__init__(hass, coordinator, device, product, mapping.description)
         self._mapping = mapping
         self._current_state = STATE_UNKNOWN
-        self._target_state = None
+        self._target_state: LockState | None = None
         self._commanded = False
-        self._commanded_timer = None
+        self._commanded_started: float | None = None
         self._datapoint_nop = None
         self._isjammed = False
-        self._keep_connect_stop = Event()
-        self._keep_connect_thread: Thread | None = None
+        self._keep_connect_task: asyncio.Task[None] | None = None
+
         # DP47 is often already present from the setup-time status read.
         self.update_device_state()
         self._update_attrs()
+
         if mapping.keep_connect:
             self._datapoint_nop = device.datapoints.get_or_create(
                 self._mapping.dp_id_nop,
                 TuyaBLEDataPointType.DT_BOOL,
                 False,
             )
-            self._keep_connect_thread = Thread(
-                target=self.send_nop_request,
+            self._keep_connect_task = hass.async_create_task(
+                self._async_send_nop_requests(),
                 name=f"tuya-ble-keep-connect-{device.address}",
-                daemon=True,
             )
-            self._keep_connect_thread.start()
 
-    def send_nop_request(self):
+    async def _async_send_nop_requests(self) -> None:
         """Periodically touch a dummy DP to keep the BLE session alive."""
-        while not self._keep_connect_stop.wait(self._mapping.keep_connect_timer):
+        while True:
+            await asyncio.sleep(self._mapping.keep_connect_timer)
             if self._datapoint_nop:
-                self._hass.create_task(self._datapoint_nop.set_value(True))
+                await self._datapoint_nop.set_value(True)
 
     async def async_will_remove_from_hass(self) -> None:
-        """Stop keepalive thread when the entity is removed/reloaded."""
-        self._keep_connect_stop.set()
-        thread = self._keep_connect_thread
-        if thread is not None and thread.is_alive():
-            await self._hass.async_add_executor_job(thread.join, 1.0)
+        """Stop the keepalive task when the entity is removed or reloaded."""
+        if self._keep_connect_task is not None:
+            self._keep_connect_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._keep_connect_task
+            self._keep_connect_task = None
+        await super().async_will_remove_from_hass()
 
     @property
     def is_locked(self) -> bool | None:
@@ -269,7 +223,9 @@ class TuyaBLELock(TuyaBLEEntity, LockEntity):
         return self._isjammed
 
     @property
-    def should_poll(self) -> bool: return False
+    def should_poll(self) -> bool:
+        """The lock state is pushed by the coordinator."""
+        return False
 
     def _update_attrs(self) -> None:
         self._attr_is_locking = self.is_locking
@@ -277,7 +233,6 @@ class TuyaBLELock(TuyaBLEEntity, LockEntity):
         self._attr_is_locked = self.is_locked
         self._attr_is_unlocked = None if self.is_locked is None else not self.is_locked
         self._attr_is_jammed = self.is_jammed
-        self._attr_changed_by = super().changed_by
 
     async def async_lock(self, **kwargs: Any) -> None:
         """Lock the device."""
@@ -287,7 +242,7 @@ class TuyaBLELock(TuyaBLEEntity, LockEntity):
         """Unlock the device."""
         await self._set_lock_state(LockState.UNLOCKED)
 
-    async def _set_lock_state(self, state: str) -> None:
+    async def _set_lock_state(self, state: LockState) -> None:
         self._target_state = state
         self._update_attrs()
         self.async_write_ha_state()
@@ -296,7 +251,7 @@ class TuyaBLELock(TuyaBLEEntity, LockEntity):
             # 350K commands are one-shot authenticated operations. Never
             # mutate DP47 optimistically; wait for the lock to report it.
             self._commanded = True
-            self._commanded_timer = datetime.now()
+            self._commanded_started = time.monotonic()
             self._update_attrs()
             self.async_write_ha_state()
             if self._target_state == LockState.UNLOCKED:
@@ -311,83 +266,73 @@ class TuyaBLELock(TuyaBLEEntity, LockEntity):
                 self.async_write_ha_state()
             return
 
-        if self._target_state == LockState.UNLOCKED:
-            dp_id = self._mapping.dp_id_unlock
-        else:
-            dp_id = self._mapping.dp_id_lock
-
+        dp_id = (
+            self._mapping.dp_id_unlock
+            if self._target_state == LockState.UNLOCKED
+            else self._mapping.dp_id_lock
+        )
         datapoint = self._device.datapoints.get_or_create(
             dp_id,
             TuyaBLEDataPointType.DT_BOOL,
             False,
         )
 
-        if self._device.product_id in ("hc7n0urm", "y2yaegze") and self._target_state == LockState.UNLOCKED:
+        if self._device.product_id in ("hc7n0urm", "y2yaegze"):
             await datapoint.set_value(True)
-            self._current_state = LockState.UNLOCKED
+            self._current_state = self._target_state
             self._commanded = False
             self._isjammed = False
             self._update_attrs()
             self.async_write_ha_state()
             return
 
-        if self._device.product_id in ("hc7n0urm", "y2yaegze") and self._target_state == LockState.LOCKED:
+        if self._device.product_id == "ikphogdj":
             await datapoint.set_value(True)
-            self._current_state = LockState.LOCKED
-            self._commanded = False
-            self._isjammed = False
-            self._update_attrs()
-            self.async_write_ha_state()
-            return
-
-        if self._device.product_id == "ikphogdj" and self._target_state == LockState.UNLOCKED:
-            await datapoint.set_value(True)
-            state_value = False if self._mapping.value_means_locked else True
+            unlocked = self._target_state == LockState.UNLOCKED
+            state_value = not unlocked if self._mapping.value_means_locked else unlocked
             self._device.datapoints._update_from_device(
-                self._mapping.dp_id, time.time(), 0, TuyaBLEDataPointType.DT_BOOL, state_value
+                self._mapping.dp_id,
+                time.time(),
+                0,
+                TuyaBLEDataPointType.DT_BOOL,
+                state_value,
             )
-            self._current_state = LockState.UNLOCKED
+            self._current_state = self._target_state
             self._commanded = False
             self._isjammed = False
             self._update_attrs()
             self.async_write_ha_state()
-            self._hass.create_task(self._device.linger_connected(30))
+            self._hass.async_create_task(self._device.linger_connected(30))
             return
 
-        if self._device.product_id == "ikphogdj" and self._target_state == LockState.LOCKED:
-            await datapoint.set_value(True)
-            state_value = True if self._mapping.value_means_locked else False
-            self._device.datapoints._update_from_device(
-                self._mapping.dp_id, time.time(), 0, TuyaBLEDataPointType.DT_BOOL, state_value
-            )
-            self._current_state = LockState.LOCKED
-            self._commanded = False
-            self._isjammed = False
-            self._update_attrs()
-            self.async_write_ha_state()
-            self._hass.create_task(self._device.linger_connected(30))
-            return
-
-        self._hass.create_task(datapoint.set_value(True))
+        self._hass.async_create_task(datapoint.set_value(True))
         self._commanded = True
-        self._commanded_timer = datetime.now()
+        self._commanded_started = time.monotonic()
 
-    def update_device_state(self):
+    def update_device_state(self) -> None:
+        """Update HA lock state from the configured state datapoint."""
         datapoint = self._device.datapoints[self._mapping.dp_id]
-        if datapoint:
-            is_set = bool(datapoint.value)
-            if self._mapping.value_means_locked:
-                self._current_state = LockState.LOCKED if is_set else LockState.UNLOCKED
-            else:
-                self._current_state = LockState.UNLOCKED if is_set else LockState.LOCKED
-            if self._commanded:
-                if ( self._current_state != self._target_state):
-                    if ( datetime.now() > self._commanded_timer + timedelta(seconds = 12) ):
-                        self._isjammed = True
-                        self._commanded = False
-                else:
-                    self._commanded = False
-                    self._isjammed = False
+        if not datapoint:
+            return
+
+        is_set = bool(datapoint.value)
+        if self._mapping.value_means_locked:
+            self._current_state = LockState.LOCKED if is_set else LockState.UNLOCKED
+        else:
+            self._current_state = LockState.UNLOCKED if is_set else LockState.LOCKED
+
+        if not self._commanded:
+            return
+
+        if self._current_state == self._target_state:
+            self._commanded = False
+            self._isjammed = False
+        elif (
+            self._commanded_started is not None
+            and time.monotonic() > self._commanded_started + 12
+        ):
+            self._isjammed = True
+            self._commanded = False
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -398,9 +343,12 @@ class TuyaBLELock(TuyaBLEEntity, LockEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        if self._device.product_id in ("hc7n0urm", "y2yaegze"):
-            return True
-        if self._device.product_id in ("ikphogdj", "z1dfsaya"):
+        if self._device.product_id in (
+            "hc7n0urm",
+            "y2yaegze",
+            "ikphogdj",
+            "z1dfsaya",
+        ):
             return True
         result = super().available
         if result and self._mapping.is_available:
@@ -413,7 +361,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Tuya BLE sensors."""
+    """Set up the Tuya BLE locks."""
     data: TuyaBLEData = hass.data[DOMAIN][entry.entry_id]
     mappings = get_mapping_by_device(data.device)
     entities: list[TuyaBLELock] = []
