@@ -128,13 +128,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = TuyaBLEData(
+    runtime_data = TuyaBLEData(
         entry.title,
         device,
         product_info,
         manager,
         coordinator,
     )
+    entry.runtime_data = runtime_data
+    # Keep the legacy hass.data index while the inherited upstream platforms
+    # are migrated to ConfigEntry.runtime_data. New integration-level code can
+    # use entry.runtime_data immediately without breaking those platforms.
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = runtime_data
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -157,7 +162,8 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        data: TuyaBLEData = hass.data[DOMAIN].pop(entry.entry_id)
+        data: TuyaBLEData = entry.runtime_data
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
         await data.device.stop()
 
     return unload_ok
