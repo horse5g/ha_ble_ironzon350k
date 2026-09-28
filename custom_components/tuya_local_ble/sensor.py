@@ -895,6 +895,7 @@ class TuyaBLESensor(TuyaBLEEntity, SensorEntity):
         return self._mapping.dp_id in (
             DP_350K_STATE_AGE_SECONDS,
             DP_350K_LAST_RX_AGE_SECONDS,
+            DP_350K_SESSION_STATE,
         )
 
     async def async_update(self) -> None:

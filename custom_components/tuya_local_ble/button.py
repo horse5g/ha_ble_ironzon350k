@@ -229,6 +229,13 @@ class TuyaBLEButton(TuyaBLEEntity, ButtonEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
+        if (
+            self._device.product_id == "z1dfsaya"
+            and self._mapping.dp_id in (-9001, -9002)
+        ):
+            # Refresh must be callable specifically when the lock is asleep;
+            # Clear diagnostics is entirely local and never needs BLE.
+            return True
         result = super().available
         if result and self._mapping.is_available:
             result = self._mapping.is_available(self, self._product)
