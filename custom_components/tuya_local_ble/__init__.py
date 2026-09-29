@@ -10,7 +10,7 @@ from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth.match import ADDRESS, BluetoothCallbackMatcher
 from homeassistant.const import CONF_ADDRESS, EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -59,6 +59,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: TuyaBLEConfigEntry) -> b
     manager = HASSTuyaBLEDeviceManager(hass, entry.options.copy())
     device = TuyaBLEDevice(manager, ble_device)
     await device.initialize()
+    if not device.device_id:
+        await device.stop()
+        raise ConfigEntryError(
+            "No valid local Tuya BLE credentials were found for this device; "
+            "check tuya_local_ble/devices.json"
+        )
+
     if device.product_id == PRODUCT_ID_350K:
         device.set_protocol_log_level(
             str(entry.options.get(CONF_PROTOCOL_LOG_LEVEL, PROTOCOL_LOG_OFF))
