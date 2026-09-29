@@ -2,15 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-
 import logging
 from typing import Callable
 
-from homeassistant.components.button import (
-    ButtonEntityDescription,
-    ButtonEntity,
-)
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -19,9 +14,15 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from .const import (
     BUTTON_350K_CLEAR_DIAGNOSTICS,
     BUTTON_350K_REFRESH_STATUS,
-    DOMAIN,
+    DP_350K_BLE_UNLOCK,
+    DP_350K_MANUAL_LOCK,
+    PRODUCT_ID_350K,
 )
-from .devices import TuyaBLEData, TuyaBLEEntity, TuyaBLEProductInfo
+from .devices import (
+    TuyaBLEConfigEntry,
+    TuyaBLEEntity,
+    TuyaBLEProductInfo,
+)
 from .tuya_ble import TuyaBLEDataPointType, TuyaBLEDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ class TuyaBLEButtonMapping:
 
 
 def is_fingerbot_in_push_mode(self: TuyaBLEButton, product: TuyaBLEProductInfo) -> bool:
-    result: bool = True
+    result = True
     if product.fingerbot:
         datapoint = self._device.datapoints[product.fingerbot.mode]
         if datapoint:
@@ -69,20 +70,11 @@ mapping: dict[str, TuyaBLECategoryButtonMapping] = {
         products={
             **dict.fromkeys(
                 ["3yqdo5yt", "xhf790if"],  # CubeTouch 1s and II
-                [
-                    TuyaBLEFingerbotModeMapping(dp_id=1),
-                ],
+                [TuyaBLEFingerbotModeMapping(dp_id=1)],
             ),
             **dict.fromkeys(
-                [
-                    "blliqpsj",
-                    "ndvkgsrm",
-                    "yiihr7zh",
-                    "neq16kgd",
-                ],  # Fingerbot Plus
-                [
-                    TuyaBLEFingerbotModeMapping(dp_id=2),
-                ],
+                ["blliqpsj", "ndvkgsrm", "yiihr7zh", "neq16kgd"],
+                [TuyaBLEFingerbotModeMapping(dp_id=2)],
             ),
             **dict.fromkeys(
                 [
@@ -93,18 +85,16 @@ mapping: dict[str, TuyaBLECategoryButtonMapping] = {
                     "bnt7wajf",
                     "rvdceqjh",
                     "5xhbk964",
-                ],  # Fingerbot
-                [
-                    TuyaBLEFingerbotModeMapping(dp_id=2),
                 ],
+                [TuyaBLEFingerbotModeMapping(dp_id=2)],
             ),
         },
     ),
     "jtmspro": TuyaBLECategoryButtonMapping(
         products={
-            "z1dfsaya": [  # Ironzon / YD_350K
+            PRODUCT_ID_350K: [
                 TuyaBLEButtonMapping(
-                    dp_id=46,
+                    dp_id=DP_350K_MANUAL_LOCK,
                     description=ButtonEntityDescription(
                         key="lock_door",
                         translation_key="lock_door",
@@ -112,7 +102,7 @@ mapping: dict[str, TuyaBLECategoryButtonMapping] = {
                     ),
                 ),
                 TuyaBLEButtonMapping(
-                    dp_id=71,
+                    dp_id=DP_350K_BLE_UNLOCK,
                     description=ButtonEntityDescription(
                         key="unlock_door",
                         translation_key="unlock_door",
@@ -145,12 +135,10 @@ mapping: dict[str, TuyaBLECategoryButtonMapping] = {
     ),
     "znhsb": TuyaBLECategoryButtonMapping(
         products={
-            "cdlandip": [  # Smart water bottle
+            "cdlandip": [
                 TuyaBLEButtonMapping(
                     dp_id=109,
-                    description=ButtonEntityDescription(
-                        key="bright_lid_screen",
-                    ),
+                    description=ButtonEntityDescription(key="bright_lid_screen"),
                 ),
             ],
         },
@@ -158,16 +146,11 @@ mapping: dict[str, TuyaBLECategoryButtonMapping] = {
 }
 
 
-def get_mapping_by_device(device: TuyaBLEDevice) -> list[TuyaBLECategoryButtonMapping]:
+def get_mapping_by_device(device: TuyaBLEDevice) -> list[TuyaBLEButtonMapping]:
     category = mapping.get(device.category)
-    if category is not None and category.products is not None:
-        product_mapping = category.products.get(device.product_id)
-        if product_mapping is not None:
-            return product_mapping
-        if category.mapping is not None:
-            return category.mapping
+    if category is None or category.products is None:
         return []
-    return []
+    return category.products.get(device.product_id) or category.mapping or []
 
 
 class TuyaBLEButton(TuyaBLEEntity, ButtonEntity):
@@ -184,34 +167,21 @@ class TuyaBLEButton(TuyaBLEEntity, ButtonEntity):
         super().__init__(hass, coordinator, device, product, mapping.description)
         self._mapping = mapping
 
-    def press(self) -> None:
+    async def async_press(self) -> None:
         """Press the button."""
-        if self._device.product_id == "z1dfsaya" and self._mapping.dp_id == 46:
-            # DP46 (manual_lock) is a one-shot command, not persistent state.
-            # Always send True and leave the local DP cache untouched; DP47 is
-            # the authoritative physical lock state.
-            self._hass.create_task(self._device.set_350k_bool_datapoint(46, True))
-            return
-
-        if self._device.product_id == "z1dfsaya" and self._mapping.dp_id == 71:
-            # Experimental authenticated BLE unlock. The command ACK is not
-            # treated as proof of an unlocked door; DP47 remains authoritative.
-            self._hass.create_task(self._device.unlock_350k())
-            return
-
-        if (
-            self._device.product_id == "z1dfsaya"
-            and self._mapping.dp_id == BUTTON_350K_REFRESH_STATUS
-        ):
-            self._hass.create_task(self._device.refresh_350k_status())
-            return
-
-        if (
-            self._device.product_id == "z1dfsaya"
-            and self._mapping.dp_id == BUTTON_350K_CLEAR_DIAGNOSTICS
-        ):
-            self._device.clear_350k_diagnostics()
-            return
+        if self._device.product_id == PRODUCT_ID_350K:
+            if self._mapping.dp_id == DP_350K_MANUAL_LOCK:
+                await self._device.set_350k_bool_datapoint(DP_350K_MANUAL_LOCK, True)
+                return
+            if self._mapping.dp_id == DP_350K_BLE_UNLOCK:
+                await self._device.unlock_350k()
+                return
+            if self._mapping.dp_id == BUTTON_350K_REFRESH_STATUS:
+                await self._device.refresh_350k_status()
+                return
+            if self._mapping.dp_id == BUTTON_350K_CLEAR_DIAGNOSTICS:
+                self._device.clear_350k_diagnostics()
+                return
 
         datapoint = self._device.datapoints.get_or_create(
             self._mapping.dp_id,
@@ -219,18 +189,16 @@ class TuyaBLEButton(TuyaBLEEntity, ButtonEntity):
             False,
         )
         if datapoint:
-            self._hass.create_task(datapoint.set_value(not bool(datapoint.value)))
+            await datapoint.set_value(not bool(datapoint.value))
 
     @property
     def available(self) -> bool:
         """Return if entity is available."""
         if (
-            self._device.product_id == "z1dfsaya"
+            self._device.product_id == PRODUCT_ID_350K
             and self._mapping.dp_id
             in (BUTTON_350K_REFRESH_STATUS, BUTTON_350K_CLEAR_DIAGNOSTICS)
         ):
-            # Refresh must be callable specifically when the lock is asleep;
-            # Clear diagnostics is entirely local and never needs BLE.
             return True
         result = super().available
         if result and self._mapping.is_available:
@@ -240,24 +208,22 @@ class TuyaBLEButton(TuyaBLEEntity, ButtonEntity):
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: TuyaBLEConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Tuya BLE buttons."""
-    data: TuyaBLEData = hass.data[DOMAIN][entry.entry_id]
+    data = entry.runtime_data
     mappings = get_mapping_by_device(data.device)
-    entities: list[TuyaBLEButton] = []
-    for button_mapping in mappings:
-        if button_mapping.force_add or data.device.datapoints.has_id(
-            button_mapping.dp_id, button_mapping.dp_type
-        ):
-            entities.append(
-                TuyaBLEButton(
-                    hass,
-                    data.coordinator,
-                    data.device,
-                    data.product,
-                    button_mapping,
-                )
-            )
+    entities = [
+        TuyaBLEButton(
+            hass,
+            data.coordinator,
+            data.device,
+            data.product,
+            button_mapping,
+        )
+        for button_mapping in mappings
+        if button_mapping.force_add
+        or data.device.datapoints.has_id(button_mapping.dp_id, button_mapping.dp_type)
+    ]
     async_add_entities(entities)
