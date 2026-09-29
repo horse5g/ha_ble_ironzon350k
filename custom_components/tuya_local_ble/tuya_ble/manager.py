@@ -1,3 +1,4 @@
+"""Credential manager abstractions for Tuya BLE devices."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -6,6 +7,8 @@ from dataclasses import dataclass
 
 @dataclass
 class TuyaBLEDeviceCredentials:
+    """Locally stored credentials and metadata for a Tuya BLE device."""
+
     uuid: str
     local_key: str
     device_id: str
@@ -17,7 +20,8 @@ class TuyaBLEDeviceCredentials:
     ble_unlock_check: str | None = None
     sec_key: str | None = None
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Return a redacted representation safe for ordinary logs."""
         return (
             "uuid: xxxxxxxxxxxxxxxx, "
             "local_key: xxxxxxxxxxxxxxxx, "
@@ -39,8 +43,9 @@ class TuyaBLEDeviceCredentials:
             "set" if self.sec_key else "not set",
         )
 
-class AbstaractTuyaBLEDeviceManager(ABC):
-    """Abstaract manager of the Tuya BLE devices credentials."""
+
+class AbstractTuyaBLEDeviceManager(ABC):
+    """Abstract manager for Tuya BLE device credentials."""
 
     @abstractmethod
     async def get_device_credentials(
@@ -49,12 +54,12 @@ class AbstaractTuyaBLEDeviceManager(ABC):
         force_update: bool = False,
         save_data: bool = False,
     ) -> TuyaBLEDeviceCredentials | None:
-        """Get credentials of the Tuya BLE device."""
-        pass
+        """Get credentials for a Tuya BLE device."""
+        raise NotImplementedError
 
     @classmethod
     def check_and_create_device_credentials(
-        self,
+        cls,
         uuid: str | None,
         local_key: str | None,
         device_id: str | None,
@@ -66,25 +71,24 @@ class AbstaractTuyaBLEDeviceManager(ABC):
         ble_unlock_check: str | None = None,
         sec_key: str | None = None,
     ) -> TuyaBLEDeviceCredentials | None:
-        """Checks and creates credentials of the Tuya BLE device."""
-        if (
-            uuid and 
-            local_key and 
-            device_id and
-            category and
-            product_id
-        ):
-            return TuyaBLEDeviceCredentials(
-                uuid,
-                local_key,
-                device_id,
-                category,
-                product_id,
-                device_name,
-                product_model,
-                product_name,
-                ble_unlock_check,
-                sec_key,
-            )
-        else:
+        """Validate required fields and create a credentials object."""
+        if not (uuid and local_key and device_id and category and product_id):
             return None
+        return TuyaBLEDeviceCredentials(
+            uuid,
+            local_key,
+            device_id,
+            category,
+            product_id,
+            device_name,
+            product_model,
+            product_name,
+            ble_unlock_check,
+            sec_key,
+        )
+
+
+# Compatibility alias for the misspelled name used by the inherited protocol
+# implementation and any existing third-party imports. New code should use
+# AbstractTuyaBLEDeviceManager.
+AbstaractTuyaBLEDeviceManager = AbstractTuyaBLEDeviceManager
