@@ -2,11 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-import time
-from .tuya_ble import TuyaBLEDataPointType
-
 import logging
+import time
 from typing import Callable
 
 from homeassistant.components.binary_sensor import (
@@ -14,7 +11,6 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -22,20 +18,22 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
-    DOMAIN,
+    DP_350K_LOCK_STATE,
+    DP_350K_PASSAGE_MODE,
+    DP_350K_SECURE_STATE,
+    PRODUCT_ID_350K,
 )
-from .devices import TuyaBLEData, TuyaBLEEntity, TuyaBLEProductInfo
+from .devices import TuyaBLEConfigEntry, TuyaBLEEntity, TuyaBLEProductInfo
 from .tuya_ble import TuyaBLEDataPointType, TuyaBLEDevice
 
 _LOGGER = logging.getLogger(__name__)
 
-SIGNAL_STRENGTH_DP_ID = -1
 LOCK_STATE_STALE_SECONDS = 90
-
 
 TuyaBLEBinarySensorIsAvailable = (
     Callable[["TuyaBLEBinarySensor", TuyaBLEProductInfo], bool] | None
 )
+
 
 @dataclass
 class TuyaBLEBinarySensorMapping:
@@ -43,36 +41,36 @@ class TuyaBLEBinarySensorMapping:
     description: BinarySensorEntityDescription
     force_add: bool = True
     dp_type: TuyaBLEDataPointType | None = None
-    getter: Callable[[TuyaBLEBinarySensor], None] | None = None
-    #coefficient: float = 1.0
-    #icons: list[str] | None = None
+    getter: Callable[["TuyaBLEBinarySensor"], None] | None = None
     is_available: TuyaBLEBinarySensorIsAvailable = None
+
 
 @dataclass
 class TuyaBLECategoryBinarySensorMapping:
     products: dict[str, list[TuyaBLEBinarySensorMapping]] | None = None
     mapping: list[TuyaBLEBinarySensorMapping] | None = None
 
+
 mapping: dict[str, TuyaBLECategoryBinarySensorMapping] = {
     "jtmspro": TuyaBLECategoryBinarySensorMapping(
         products={
-            "z1dfsaya": [
+            PRODUCT_ID_350K: [
                 TuyaBLEBinarySensorMapping(
-                    dp_id=47,
+                    dp_id=DP_350K_LOCK_STATE,
                     description=BinarySensorEntityDescription(
                         key="lock_state",
                         device_class=BinarySensorDeviceClass.LOCK,
                     ),
                 ),
                 TuyaBLEBinarySensorMapping(
-                    dp_id=33,
+                    dp_id=DP_350K_PASSAGE_MODE,
                     description=BinarySensorEntityDescription(
                         key="passage_mode",
                         icon="mdi:door-open",
                     ),
                 ),
                 TuyaBLEBinarySensorMapping(
-                    dp_id=32,
+                    dp_id=DP_350K_SECURE_STATE,
                     description=BinarySensorEntityDescription(
                         key="secure_lock",
                         icon="mdi:shield-lock",
@@ -83,34 +81,26 @@ mapping: dict[str, TuyaBLECategoryBinarySensorMapping] = {
     ),
     "wk": TuyaBLECategoryBinarySensorMapping(
         products={
-            "drlajpqc": [  # Thermostatic Radiator Valve
+            "drlajpqc": [
                 TuyaBLEBinarySensorMapping(
                     dp_id=105,
                     description=BinarySensorEntityDescription(
                         key="battery",
-                        #icon="mdi:battery-alert",
                         device_class=BinarySensorDeviceClass.BATTERY,
                         entity_category=EntityCategory.DIAGNOSTIC,
                     ),
                 ),
             ],
         },
-    ),   
+    ),
 }
 
 
 def get_mapping_by_device(device: TuyaBLEDevice) -> list[TuyaBLEBinarySensorMapping]:
     category = mapping.get(device.category)
-    if category is not None and category.products is not None:
-        product_mapping = category.products.get(device.product_id)
-        if product_mapping is not None:
-            return product_mapping
-        if category.mapping is not None:
-            return category.mapping
-        else:
-            return []
-    else:
+    if category is None or category.products is None:
         return []
+    return category.products.get(device.product_id) or category.mapping or []
 
 
 class TuyaBLEBinarySensor(TuyaBLEEntity, BinarySensorEntity):
@@ -138,10 +128,9 @@ class TuyaBLEBinarySensor(TuyaBLEEntity, BinarySensorEntity):
             datapoint = self._device.datapoints[self._mapping.dp_id]
             if datapoint:
                 self._attr_is_on = bool(datapoint.value)
-
                 if (
-                    self._device.product_id == "z1dfsaya"
-                    and self._mapping.dp_id == 47
+                    self._device.product_id == PRODUCT_ID_350K
+                    and self._mapping.dp_id == DP_350K_LOCK_STATE
                 ):
                     self._schedule_lock_state_stale(datapoint)
         self.async_write_ha_state()
@@ -161,9 +150,13 @@ class TuyaBLEBinarySensor(TuyaBLEEntity, BinarySensorEntity):
         )
 
     async def async_added_to_hass(self) -> None:
+        """Schedule stale-state tracking for an existing lock-state datapoint."""
         await super().async_added_to_hass()
-        if self._device.product_id == "z1dfsaya" and self._mapping.dp_id == 47:
-            datapoint = self._device.datapoints[47]
+        if (
+            self._device.product_id == PRODUCT_ID_350K
+            and self._mapping.dp_id == DP_350K_LOCK_STATE
+        ):
+            datapoint = self._device.datapoints[DP_350K_LOCK_STATE]
             if datapoint is not None:
                 self._schedule_lock_state_stale(datapoint)
 
@@ -174,6 +167,7 @@ class TuyaBLEBinarySensor(TuyaBLEEntity, BinarySensorEntity):
         self.async_write_ha_state()
 
     async def async_will_remove_from_hass(self) -> None:
+        """Cancel any pending stale-state timer."""
         if self._stale_timer is not None:
             self._stale_timer()
             self._stale_timer = None
@@ -182,16 +176,12 @@ class TuyaBLEBinarySensor(TuyaBLEEntity, BinarySensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        if self._device.product_id == "z1dfsaya":
+        if self._device.product_id == PRODUCT_ID_350K:
             datapoint = self._device.datapoints[self._mapping.dp_id]
             if datapoint is None:
                 return False
-
-            if self._mapping.dp_id == 47:
-                # Physical lock state must be recent.  Persistent configuration
-                # datapoints such as DP32/DP33 may safely retain last-known state.
+            if self._mapping.dp_id == DP_350K_LOCK_STATE:
                 return (time.time() - datapoint.timestamp) <= LOCK_STATE_STALE_SECONDS
-
             return True
 
         result = super().available
@@ -200,27 +190,23 @@ class TuyaBLEBinarySensor(TuyaBLEEntity, BinarySensorEntity):
         return result
 
 
-
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: TuyaBLEConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Tuya BLE sensors."""
-    data: TuyaBLEData = hass.data[DOMAIN][entry.entry_id]
+    """Set up the Tuya BLE binary sensors."""
+    data = entry.runtime_data
     mappings = get_mapping_by_device(data.device)
-    entities: list[TuyaBLEBinarySensor] = []
-    for mapping in mappings:
-        if mapping.force_add or data.device.datapoints.has_id(
-            mapping.dp_id, mapping.dp_type
-        ):
-            entities.append(
-                TuyaBLEBinarySensor(
-                    hass,
-                    data.coordinator,
-                    data.device,
-                    data.product,
-                    mapping,
-                )
-            )
-    async_add_entities(entities)
+    async_add_entities(
+        TuyaBLEBinarySensor(
+            hass,
+            data.coordinator,
+            data.device,
+            data.product,
+            sensor_mapping,
+        )
+        for sensor_mapping in mappings
+        if sensor_mapping.force_add
+        or data.device.datapoints.has_id(sensor_mapping.dp_id, sensor_mapping.dp_type)
+    )
