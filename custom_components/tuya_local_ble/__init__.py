@@ -11,6 +11,7 @@ from homeassistant.components.bluetooth.match import ADDRESS, BluetoothCallbackM
 from homeassistant.const import CONF_ADDRESS, EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -21,8 +22,8 @@ from .const import (
 )
 from .devices import TuyaBLEConfigEntry, TuyaBLECoordinator, TuyaBLEData, get_device_product_info
 from .keyman import HASSTuyaBLEDeviceManager
+from .resilient_device import ResilientTuyaBLEDevice
 from .services import async_register_services
-from .tuya_ble import TuyaBLEDevice
 
 PLATFORMS: list[Platform] = [
     Platform.BUTTON,
@@ -37,6 +38,26 @@ PLATFORMS: list[Platform] = [
 ]
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@callback
+def _enable_350k_sensor_entries(hass: HomeAssistant, entry_id: str) -> int:
+    """Enable all 350K sensors that the integration disabled by default.
+
+    User-disabled entities are deliberately left alone. This also migrates
+    existing installs whose diagnostic sensors were registered as disabled by
+    older experimental builds.
+    """
+    registry = er.async_get(hass)
+    enabled = 0
+    for registry_entry in er.async_entries_for_config_entry(registry, entry_id):
+        if (
+            registry_entry.domain == Platform.SENSOR
+            and registry_entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+        ):
+            registry.async_update_entity(registry_entry.entity_id, disabled_by=None)
+            enabled += 1
+    return enabled
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -57,7 +78,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TuyaBLEConfigEntry) -> b
         )
 
     manager = HASSTuyaBLEDeviceManager(hass, entry.options.copy())
-    device = TuyaBLEDevice(manager, ble_device)
+    device = ResilientTuyaBLEDevice(manager, ble_device)
     await device.initialize()
     if not device.device_id:
         await device.stop()
@@ -143,8 +164,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: TuyaBLEConfigEntry) -> b
         coordinator,
     )
 
+    # Older experimental builds registered many useful 350K diagnostics as
+    # disabled-by-integration. Enable those existing registry entries before
+    # platform setup so HA actually instantiates them on this load.
+    if device.product_id == PRODUCT_ID_350K:
+        migrated_sensors = _enable_350k_sensor_entries(hass, entry.entry_id)
+        if migrated_sensors:
+            _LOGGER.info(
+                "%s: enabled %s previously disabled 350K sensor entities",
+                address,
+                migrated_sensors,
+            )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
+    # On a fresh install, disabled-by-default registry rows are created during
+    # the platform setup above. Clear those rows now and reload exactly once so
+    # the sensors become live entities. A subsequent setup finds no integration-
+    # disabled sensors, so this cannot form a reload loop.
+    if device.product_id == PRODUCT_ID_350K:
+        newly_enabled_sensors = _enable_350k_sensor_entries(hass, entry.entry_id)
+        if newly_enabled_sensors:
+            _LOGGER.info(
+                "%s: enabled %s newly registered 350K sensor entities; reloading once",
+                address,
+                newly_enabled_sensors,
+            )
+            hass.async_create_task(
+                hass.config_entries.async_reload(entry.entry_id),
+                name=f"tuya-local-ble-enable-350k-sensors-{entry.entry_id}",
+            )
 
     async def _async_stop(event: Event) -> None:
         """Close the connection."""
