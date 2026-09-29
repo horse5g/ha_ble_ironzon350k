@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 import logging
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
@@ -13,12 +12,14 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
-    DOMAIN,
+    DP_350K_BEEP_VOLUME,
+    DP_350K_LANGUAGE,
     FINGERBOT_MODE_PROGRAM,
     FINGERBOT_MODE_PUSH,
     FINGERBOT_MODE_SWITCH,
+    PRODUCT_ID_350K,
 )
-from .devices import TuyaBLEData, TuyaBLEEntity, TuyaBLEProductInfo
+from .devices import TuyaBLEConfigEntry, TuyaBLEEntity, TuyaBLEProductInfo
 from .tuya_ble import TuyaBLEDataPointType, TuyaBLEDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -95,9 +96,9 @@ mapping: dict[str, TuyaBLECategorySelectMapping] = {
     ),
     "jtmspro": TuyaBLECategorySelectMapping(
         products={
-            "z1dfsaya": [
+            PRODUCT_ID_350K: [
                 TuyaBLESelectMapping(
-                    dp_id=31,
+                    dp_id=DP_350K_BEEP_VOLUME,
                     description=SelectEntityDescription(
                         key="beep_volume",
                         options=["mute", "low", "normal", "high"],
@@ -105,7 +106,7 @@ mapping: dict[str, TuyaBLECategorySelectMapping] = {
                     ),
                 ),
                 TuyaBLESelectMapping(
-                    dp_id=28,
+                    dp_id=DP_350K_LANGUAGE,
                     description=SelectEntityDescription(
                         key="language",
                         options=["chinese_simplified", "english"],
@@ -243,10 +244,7 @@ def get_mapping_by_device(device: TuyaBLEDevice) -> list[TuyaBLESelectMapping]:
     category = mapping.get(device.category)
     if category is None or category.products is None:
         return []
-    product_mapping = category.products.get(device.product_id)
-    if product_mapping is not None:
-        return product_mapping
-    return category.mapping or []
+    return category.products.get(device.product_id) or category.mapping or []
 
 
 class TuyaBLESelect(TuyaBLEEntity, SelectEntity):
@@ -263,31 +261,28 @@ class TuyaBLESelect(TuyaBLEEntity, SelectEntity):
         super().__init__(hass, coordinator, device, product, mapping.description)
         self._mapping = mapping
         self._attr_options = mapping.description.options
-        # Some locks ACK enum writes without a durable DP echo. Keep the last
-        # valid option so unrelated coordinator updates do not blank HA state.
         self._sticky_option: str | None = None
 
     def _is_sticky_select(self) -> bool:
         if self._device.product_id == "hc7n0urm":
             return self._mapping.dp_id in (31, 48)
         if self._device.product_id == "ikphogdj":
-            return self._mapping.dp_id == 31
-        if self._device.product_id == "z1dfsaya":
-            return self._mapping.dp_id in (28, 31)
+            return self._mapping.dp_id in (31, 48)
+        if self._device.product_id == PRODUCT_ID_350K:
+            return self._mapping.dp_id in (DP_350K_LANGUAGE, DP_350K_BEEP_VOLUME)
         return False
 
     def _option_from_datapoint(self) -> str | None:
         datapoint = self._device.datapoints[self._mapping.dp_id]
         if not datapoint:
             return None
-        options = self._attr_options or []
         value = datapoint.value
         try:
             int_value = int(value)
         except (TypeError, ValueError):
-            return value if isinstance(value, str) and value in options else None
-        if 0 <= int_value < len(options):
-            return options[int_value]
+            return value if isinstance(value, str) and value in self._attr_options else None
+        if 0 <= int_value < len(self._attr_options):
+            return self._attr_options[int_value]
         return None
 
     @property
@@ -299,25 +294,23 @@ class TuyaBLESelect(TuyaBLEEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        """Return the selected entity option."""
+        """Return the selected entity option to represent the entity state."""
         option = self._option_from_datapoint()
         if option is not None:
             self._sticky_option = option
             return option
-        options = self._attr_options or []
-        if self._is_sticky_select() and self._sticky_option in options:
+        if self._is_sticky_select() and self._sticky_option in self._attr_options:
             return self._sticky_option
         return None
 
     async def async_select_option(self, option: str) -> None:
-        """Change the selected option."""
-        options = self._attr_options or []
-        if option not in options:
+        """Change the selected option and push local state immediately."""
+        if option not in self._attr_options:
             return
-        int_value = options.index(option)
+        int_value = self._attr_options.index(option)
         if (
-            self._device.product_id == "z1dfsaya"
-            and self._mapping.dp_id in (28, 31)
+            self._device.product_id == PRODUCT_ID_350K
+            and self._mapping.dp_id in (DP_350K_LANGUAGE, DP_350K_BEEP_VOLUME)
         ):
             sent = await self._device.set_350k_enum_datapoint(
                 self._mapping.dp_id, int_value
@@ -326,12 +319,13 @@ class TuyaBLESelect(TuyaBLEEntity, SelectEntity):
                 self._sticky_option = option
             self.async_write_ha_state()
             return
-
         datapoint = self._device.datapoints.get_or_create(
             self._mapping.dp_id,
             TuyaBLEDataPointType.DT_ENUM,
             int_value,
         )
+        if not datapoint:
+            return
         await datapoint.set_value(int_value)
         self._sticky_option = option
         self.async_write_ha_state()
@@ -339,22 +333,21 @@ class TuyaBLESelect(TuyaBLEEntity, SelectEntity):
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: TuyaBLEConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Tuya BLE selects."""
-    data: TuyaBLEData = hass.data[DOMAIN][entry.entry_id]
+    data = entry.runtime_data
     mappings = get_mapping_by_device(data.device)
-    entities = [
+    async_add_entities(
         TuyaBLESelect(
             hass,
             data.coordinator,
             data.device,
             data.product,
-            mapping,
+            select_mapping,
         )
-        for mapping in mappings
-        if mapping.force_add
-        or data.device.datapoints.has_id(mapping.dp_id, mapping.dp_type)
-    ]
-    async_add_entities(entities)
+        for select_mapping in mappings
+        if select_mapping.force_add
+        or data.device.datapoints.has_id(select_mapping.dp_id, select_mapping.dp_type)
+    )
