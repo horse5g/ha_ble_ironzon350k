@@ -19,34 +19,17 @@ from .const import (
     CONF_PRODUCT_NAME,
     CONF_UUID,
 )
-from .tuya_ble import (
-    AbstaractTuyaBLEDeviceManager,
-    TuyaBLEDeviceCredentials,
-)
+from .tuya_ble import AbstractTuyaBLEDeviceManager, TuyaBLEDeviceCredentials
 
 _LOGGER = logging.getLogger(__name__)
 
 CONF_SEC_KEY = "sec_key"
 
-CONF_TUYA_DEVICE_KEYS = [
-    CONF_UUID,
-    CONF_LOCAL_KEY,
-    CONF_DEVICE_ID,
-    CONF_CATEGORY,
-    CONF_PRODUCT_ID,
-    CONF_DEVICE_NAME,
-    CONF_PRODUCT_NAME,
-    CONF_PRODUCT_MODEL,
-    CONF_BLE_UNLOCK_CHECK,
-    CONF_SEC_KEY,
-]
 
-
-class HASSTuyaBLEDeviceManager(AbstaractTuyaBLEDeviceManager):
+class HASSTuyaBLEDeviceManager(AbstractTuyaBLEDeviceManager):
     """Manager for locally stored Tuya BLE device credentials."""
 
     def __init__(self, hass: HomeAssistant, data: dict[str, Any]) -> None:
-        assert hass is not None
         self._hass = hass
         self._data = data
         self._devicedata: dict[str, dict[str, Any]] | None = None
