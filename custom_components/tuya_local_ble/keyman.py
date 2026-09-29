@@ -43,12 +43,22 @@ class HASSTuyaBLEDeviceManager(AbstractTuyaBLEDeviceManager):
             raise ValueError("Tuya BLE credential file must contain a JSON object")
         return loaded
 
-    async def load_device_config(self) -> None:
-        """Load locally stored device credentials without blocking HA's loop."""
+    async def load_device_config(self) -> bool:
+        """Load locally stored credentials, returning whether the file is usable."""
         devicedata_path = self._hass.config.path(CONF_CRED_FILE)
-        self._devicedata = await self._hass.async_add_executor_job(
-            self._read_device_config, devicedata_path
-        )
+        try:
+            self._devicedata = await self._hass.async_add_executor_job(
+                self._read_device_config, devicedata_path
+            )
+        except FileNotFoundError:
+            _LOGGER.warning("Tuya BLE credential file %s was not found", CONF_CRED_FILE)
+            self._devicedata = {}
+            return False
+        except (json.JSONDecodeError, ValueError, TypeError) as err:
+            _LOGGER.error("Tuya BLE credential file %s is invalid: %s", CONF_CRED_FILE, err)
+            self._devicedata = {}
+            return False
+        return True
 
     async def get_device_credentials(
         self,
@@ -57,8 +67,8 @@ class HASSTuyaBLEDeviceManager(AbstractTuyaBLEDeviceManager):
         save_data: bool = False,
     ) -> TuyaBLEDeviceCredentials | None:
         """Get credentials of a Tuya BLE device."""
-        if self._devicedata is None:
-            await self.load_device_config()
+        if self._devicedata is None and not await self.load_device_config():
+            return None
 
         credentials = self._devicedata.get(address)
         if not credentials:
