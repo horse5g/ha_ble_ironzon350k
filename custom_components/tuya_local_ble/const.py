@@ -1,4 +1,4 @@
-"""The Tuya BLE integration."""
+"""Constants for the Tuya Local BLE integration."""
 from __future__ import annotations
 
 from typing_extensions import Final
@@ -52,6 +52,26 @@ FINGERBOT_MODE_PUSH: Final = "push"
 FINGERBOT_MODE_SWITCH: Final = "switch"
 FINGERBOT_MODE_PROGRAM: Final = "program"
 FINGERBOT_BUTTON_EVENT: Final = "fingerbot_button_pressed"
+
+# Ironzon / YD_350K identity and physical Tuya datapoints. Keep these in one
+# place so entity mappings, events, diagnostics and protocol code do not drift.
+PRODUCT_ID_350K: Final = "z1dfsaya"
+DP_350K_BATTERY_PERCENT: Final = 8
+DP_350K_FINGERPRINT_CREDENTIAL_ID: Final = 12
+DP_350K_PIN_CREDENTIAL_ID: Final = 13
+DP_350K_BLE_UNLOCK_EVENT: Final = 19
+DP_350K_LOCK_RECORD: Final = 20
+DP_350K_FAILED_CREDENTIAL: Final = 21
+DP_350K_LANGUAGE: Final = 28
+DP_350K_BEEP_VOLUME: Final = 31
+DP_350K_SECURE_STATE: Final = 32
+DP_350K_PASSAGE_MODE: Final = 33
+DP_350K_MANUAL_LOCK: Final = 46
+DP_350K_LOCK_STATE: Final = 47
+DP_350K_SPECIAL_ENUM: Final = 68
+DP_350K_BLE_UNLOCK: Final = 71
+DP_350K_SPECIAL_BOOL: Final = 78
+DP_350K_SECURE_CONTROL: Final = 79
 
 # Synthetic, local-only button IDs for YD_350K actions that are not real Tuya
 # datapoints. Keep these named so dispatch/availability logic cannot silently
