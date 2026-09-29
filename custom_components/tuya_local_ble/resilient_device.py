@@ -65,18 +65,19 @@ class ResilientTuyaBLEDevice(TuyaBLEDevice):
 
     async def _execute_disconnect(self) -> None:
         """Treat proxy EOF during an intentional disconnect as already closed."""
-        was_paired = self._is_paired
         try:
             await super()._execute_disconnect()
         except BLEAK_EXCEPTIONS:
             aborted = self._abort_transport_waiters()
-            self._is_paired = False
+            # If Bleak's normal disconnected callback already ran while
+            # disconnect() was in flight, _is_paired is already False and HA
+            # has already been notified. Only synthesize the callback when the
+            # proxy vanished before Bleak could deliver it.
+            if self._is_paired:
+                self._is_paired = False
+                super()._fire_disconnected_callbacks()
             async with self._seq_num_lock:
                 self._current_seq_num = 1
-            if was_paired:
-                # Some proxy failures do not deliver Bleak's normal disconnected
-                # callback. Make sure HA still sees the transport transition.
-                super()._fire_disconnected_callbacks()
             _LOGGER.debug(
                 "%s: BLE proxy disappeared during disconnect; treating link as closed%s",
                 self.address,
