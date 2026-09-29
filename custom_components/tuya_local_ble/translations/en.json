@@ -342,7 +342,7 @@
         "name": "Passage mode"
       },
       "secure_lock_control": {
-        "name": "Secure lock (temporary)"
+        "name": "Secure lock"
       }
     },
     "lock": {
