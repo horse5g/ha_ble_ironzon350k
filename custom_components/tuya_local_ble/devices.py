@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import logging
 
 from home_assistant_bluetooth import BluetoothServiceInfoBleak
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, CONF_DEVICE_ID
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
@@ -16,8 +17,10 @@ from .const import (
     DEVICE_DEF_MANUFACTURER,
     DOMAIN,
     DP_350K_LAST_ACCESS_EVENT,
+    DP_350K_LOCK_STATE,
     EVENT_350K,
     FINGERBOT_BUTTON_EVENT,
+    PRODUCT_ID_350K,
     SET_DISCONNECTED_DELAY,
 )
 from .keyman import HASSTuyaBLEDeviceManager
@@ -87,10 +90,13 @@ class TuyaBLEEntity(CoordinatorEntity):
 class TuyaBLECoordinator(DataUpdateCoordinator[None]):
     """Data coordinator for receiving Tuya BLE updates."""
 
-    def __init__(self, hass: HomeAssistant, device: TuyaBLEDevice) -> None:
+    def __init__(
+        self, hass: HomeAssistant, device: TuyaBLEDevice, config_entry_id: str
+    ) -> None:
         """Initialize the coordinator."""
         super().__init__(hass, _LOGGER, name=DOMAIN)
         self._device = device
+        self._config_entry_id = config_entry_id
         self._disconnected = True
         self._unsub_disconnect: CALLBACK_TYPE | None = None
         device.register_connected_callback(self._async_handle_connect)
@@ -114,8 +120,8 @@ class TuyaBLECoordinator(DataUpdateCoordinator[None]):
     @callback
     def _async_fire_350k_event(self, event_type: str, timestamp: float) -> None:
         registry = dr.async_get(self.hass)
-        registry_device = registry.async_get_device(
-            identifiers={(DOMAIN, self._device.address)}
+        registry_device = registry.async_get_device_by_identifier(
+            (DOMAIN, self._device.address), self._config_entry_id
         )
         payload = {
             "type": event_type,
@@ -131,11 +137,11 @@ class TuyaBLECoordinator(DataUpdateCoordinator[None]):
         """Trigger coordinator listeners and local integration events."""
         self._async_handle_connect()
         self.async_set_updated_data(None)
-        if self._device.product_id == "z1dfsaya":
+        if self._device.product_id == PRODUCT_ID_350K:
             for update in updates:
                 if update.id == DP_350K_LAST_ACCESS_EVENT:
                     self._async_fire_350k_event(str(update.value), update.timestamp)
-                elif update.id == 47 and update.changed_by_device:
+                elif update.id == DP_350K_LOCK_STATE and update.changed_by_device:
                     self._async_fire_350k_event(
                         "unlocked" if bool(update.value) else "locked",
                         update.timestamp,
@@ -183,6 +189,9 @@ class TuyaBLEData:
     coordinator: TuyaBLECoordinator
 
 
+type TuyaBLEConfigEntry = ConfigEntry[TuyaBLEData]
+
+
 @dataclass
 class TuyaBLECategoryInfo:
     products: dict[str, TuyaBLEProductInfo]
@@ -210,7 +219,7 @@ devices_database: dict[str, TuyaBLECategoryInfo] = {
     ),
     "jtmspro": TuyaBLECategoryInfo(
         products={
-            "z1dfsaya": TuyaBLEProductInfo(name="350K"),
+            PRODUCT_ID_350K: TuyaBLEProductInfo(name="350K"),
             "rlyxv7pe": TuyaBLEProductInfo(name="A1 PRO MAX"),
             "hc7n0urm": TuyaBLEProductInfo(name="Raykube A1 Ultra"),
             "y2yaegze": TuyaBLEProductInfo(name="CTL20H SmartLock"),
