@@ -38,6 +38,7 @@ The following are implemented on `experiment/dp46-lock` but should not yet be de
 - V4 sequence-gap diagnostics.
 - Unknown-DP recorder and sanitized event timeline.
 - Test-marker and sanitized diagnostic-export services.
+- Native Home Assistant **Download diagnostics** support using the same sanitized snapshot.
 - Home Assistant event-bus events and device triggers.
 - Firmware/hardware/protocol diagnostic sensors.
 
@@ -97,7 +98,7 @@ Restart Home Assistant after copying the files.
 - [ ] **Sanitized event timeline** — verify ordering, the **50-entry** bound, DP12/13/19 credential-value redaction, marker ordering, and reset behavior.
 - [ ] **DP20 correlation** — correlate manual lock, auto-lock, app lock, fingerprint/PIN unlock, HA lock, and eventual HA unlock without assigning byte meanings prematurely.
 - [ ] **Test-marker service** — verify marker ordering and multi-lock targeting.
-- [ ] **Sanitized diagnostic export** — verify the response remains free of credentials/raw payloads while retaining useful metadata.
+- [ ] **Sanitized diagnostic export** — verify both the service response and native HA Download diagnostics remain free of credentials/raw payloads while retaining useful metadata.
 - [ ] **State freshness/session sensors** — verify Last device report, State age, BLE session state, and Last RX age.
 - [ ] **Command counters** — verify success, timeout/not-acknowledged, BLE error, busy/rejected, unavailable, and reconnect-required accounting.
 - [ ] **Manual Refresh lock status** — verify it connects/authenticates, requests status once, and does not change lock configuration.
@@ -155,7 +156,7 @@ The experimental lock entity does not optimistically change DP47.
 
 **Last lock record (raw diagnostic)** intentionally retains the exact plaintext DP20 value for reverse engineering. It is disabled by default and should be treated as sensitive diagnostic data.
 
-It is **not** the same thing as the sanitized unknown-DP recorder, sanitized event timeline, or `export_350k_diagnostics` service. Those sanitized facilities deliberately omit raw/string/bitmap contents and credential scalar values where applicable.
+It is **not** the same thing as the sanitized unknown-DP recorder, sanitized event timeline, `export_350k_diagnostics` service, or native Home Assistant diagnostics. Those sanitized facilities deliberately omit raw/string/bitmap contents and credential scalar values where applicable.
 
 ## Sanitized unknown-DP recorder
 
@@ -179,6 +180,12 @@ The disabled-by-default **Sanitized event timeline** keeps the most recent **50*
 Each entry contains bounded metadata: timestamp, 40-bit event sequence, source/kind, DP number, Tuya type, payload length, ordinary/timed classification, whether the DP is interpreted, and a safe scalar where appropriate.
 
 RAW, BITMAP, and STRING contents are never retained. Credential/user scalar DPs 12, 13, and 19 are redacted from the generic timeline. The timeline is session-only and resets when the integration reloads or Home Assistant restarts.
+
+## Diagnostics
+
+Home Assistant's native **Download diagnostics** action is supported for each config entry. For the 350K it includes product/firmware/protocol metadata plus the existing sanitized runtime snapshot.
+
+Native diagnostics and the legacy `tuya_local_ble.export_350k_diagnostics` service intentionally omit local keys, secKeys, `ble_unlock_check`, credential IDs, and raw/string/bitmap payload contents. The service is retained for the reverse-engineering/test harness, while the native HA action is the preferred general-purpose diagnostic export.
 
 ## Test harness services
 
@@ -223,7 +230,15 @@ Two disabled-by-default diagnostic buttons are available:
 - timeline redaction/bounds,
 - marker sanitization.
 
-The tests require no physical lock and no private credentials. A persistent GitHub Actions workflow under `.github/workflows/tests.yml` runs them on pushes to `main` and `experiment/**`, pull requests, and manual dispatches.
+`tests/test_crypto_compat.py` pins the AES-CBC behavior used by the Tuya transport to a fixed known-answer vector. The integration currently pins `pycryptodome==3.23.0`.
+
+CI runs on pushes to `main` and `experiment/**`, pull requests, and manual dispatches:
+
+- Python 3.14 compile and unit/protocol regression tests,
+- Home Assistant Hassfest validation,
+- conservative Ruff `F` correctness checks for undefined names, duplicate definitions/keys, unused imports, and related Python errors.
+
+The tests require no physical lock and no private credentials.
 
 ## 350K datapoints currently understood
 
@@ -257,13 +272,3 @@ The integration works best with an active ESPHome Bluetooth proxy and a stable A
 An earlier test setup showed long command delays and poor reliability. That behavior was traced to a bad ESP proxy. After replacing the ESP, the lock became reliably responsive. Those old delays should not be treated as evidence for a required 20–40 second protocol/session cooldown.
 
 For latency comparisons, proxy Wi-Fi/API stability is therefore an important variable alongside BLE signal quality and session state.
-
-## Repository policy
-
-The working integration belongs under `custom_components/tuya_local_ble/`.
-
-Credentials and captures stay out of GitHub. Do **not** commit `devices.json`, local keys, secKeys, devKeys, account credentials, authenticated API responses, raw HCI snoop logs, APKs, ESPHome API/Noise keys, or credential-bearing Home Assistant logs.
-
-## Upstream
-
-This project carries modifications to the `tuya_local_ble` integration from ShonP40/Tuya-BLE while the Ironzon 350K-specific protocol work remains experimental.
