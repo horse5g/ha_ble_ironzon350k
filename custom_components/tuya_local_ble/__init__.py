@@ -8,18 +8,18 @@ from bleak_retry_connector import BLEAK_RETRY_EXCEPTIONS as BLEAK_EXCEPTIONS, ge
 
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth.match import ADDRESS, BluetoothCallbackMatcher
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CONF_KEEP_CONNECTED,
     CONF_PROTOCOL_LOG_LEVEL,
-    DOMAIN,
+    PRODUCT_ID_350K,
     PROTOCOL_LOG_OFF,
 )
-from .devices import TuyaBLECoordinator, TuyaBLEData, get_device_product_info
+from .devices import TuyaBLEConfigEntry, TuyaBLECoordinator, TuyaBLEData, get_device_product_info
 from .keyman import HASSTuyaBLEDeviceManager
 from .services import async_register_services
 from .tuya_ble import TuyaBLEDevice
@@ -39,13 +39,13 @@ PLATFORMS: list[Platform] = [
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up integration-level resources."""
     async_register_services(hass)
     return True
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: TuyaBLEConfigEntry) -> bool:
     """Set up Tuya BLE from a config entry."""
     address: str = entry.data[CONF_ADDRESS]
     ble_device = bluetooth.async_ble_device_from_address(
@@ -59,7 +59,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     manager = HASSTuyaBLEDeviceManager(hass, entry.options.copy())
     device = TuyaBLEDevice(manager, ble_device)
     await device.initialize()
-    if device.product_id == "z1dfsaya":
+    if device.product_id == PRODUCT_ID_350K:
         device.set_protocol_log_level(
             str(entry.options.get(CONF_PROTOCOL_LOG_LEVEL, PROTOCOL_LOG_OFF))
         )
@@ -71,7 +71,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     product_info = get_device_product_info(device)
 
-    coordinator = TuyaBLECoordinator(hass, device)
+    coordinator = TuyaBLECoordinator(hass, device, entry.entry_id)
     try:
         await device.update()
     except BLEAK_EXCEPTIONS as ex:
@@ -128,18 +128,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
 
-    runtime_data = TuyaBLEData(
+    entry.runtime_data = TuyaBLEData(
         entry.title,
         device,
         product_info,
         manager,
         coordinator,
     )
-    entry.runtime_data = runtime_data
-    # Keep the legacy hass.data index while the inherited upstream platforms
-    # are migrated to ConfigEntry.runtime_data. New integration-level code can
-    # use entry.runtime_data immediately without breaking those platforms.
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = runtime_data
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -154,16 +149,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def _async_update_listener(
+    hass: HomeAssistant, entry: TuyaBLEConfigEntry
+) -> None:
     """Reload when integration options change."""
     await hass.config_entries.async_reload(entry.entry_id)
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: TuyaBLEConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        data: TuyaBLEData = entry.runtime_data
-        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-        await data.device.stop()
+        await entry.runtime_data.device.stop()
 
     return unload_ok
