@@ -56,18 +56,18 @@ class ResilientTuyaBLEDevice(TuyaBLEDevice):
         """Best-effort protocol reply when the proxy vanishes mid-frame."""
         try:
             await super()._send_response(code, data, response_to)
-        except BLEAK_EXCEPTIONS:
+        except BLEAK_EXCEPTIONS as ex:
             _LOGGER.debug(
-                "%s: dropped Tuya protocol reply because BLE transport disconnected",
+                "%s: dropped Tuya protocol reply because BLE transport disconnected: %s",
                 self.address,
-                exc_info=True,
+                ex,
             )
 
     async def _execute_disconnect(self) -> None:
         """Treat proxy EOF during an intentional disconnect as already closed."""
         try:
             await super()._execute_disconnect()
-        except BLEAK_EXCEPTIONS:
+        except BLEAK_EXCEPTIONS as ex:
             aborted = self._abort_transport_waiters()
             # If Bleak's normal disconnected callback already ran while
             # disconnect() was in flight, _is_paired is already False and HA
@@ -79,8 +79,8 @@ class ResilientTuyaBLEDevice(TuyaBLEDevice):
             async with self._seq_num_lock:
                 self._current_seq_num = 1
             _LOGGER.debug(
-                "%s: BLE proxy disappeared during disconnect; treating link as closed%s",
+                "%s: BLE proxy disappeared during disconnect; treating link as closed%s: %s",
                 self.address,
                 f"; aborted {aborted} pending waiter(s)" if aborted else "",
-                exc_info=True,
+                ex,
             )
