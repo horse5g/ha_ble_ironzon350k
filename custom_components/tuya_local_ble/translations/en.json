@@ -44,7 +44,7 @@
         "name": "Unlock door (experimental)"
       },
       "refresh_status": {
-        "name": "Refresh lock status"
+        "name": "Request device status"
       },
       "clear_diagnostics": {
         "name": "Clear test diagnostics"
