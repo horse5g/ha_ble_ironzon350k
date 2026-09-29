@@ -11,7 +11,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 
-from .const import DOMAIN
+from .const import DOMAIN, PRODUCT_ID_350K
 from .devices import TuyaBLEData
 
 SERVICE_MARK_350K_TEST = "mark_350k_test"
@@ -23,12 +23,30 @@ TARGET_SCHEMA = {
 }
 
 
+def _entry_runtime_data(hass: HomeAssistant, entry_id: str) -> TuyaBLEData | None:
+    """Return loaded Tuya BLE runtime data for one config entry."""
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain != DOMAIN:
+        return None
+    data = getattr(entry, "runtime_data", None)
+    return data if isinstance(data, TuyaBLEData) else None
+
+
+def _loaded_350k_data(hass: HomeAssistant) -> list[TuyaBLEData]:
+    """Return runtime data for all currently loaded 350K entries."""
+    result: list[TuyaBLEData] = []
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        data = getattr(entry, "runtime_data", None)
+        if isinstance(data, TuyaBLEData) and data.device.product_id == PRODUCT_ID_350K:
+            result.append(data)
+    return result
+
+
 def _resolve_350k_data(hass: HomeAssistant, call: ServiceCall) -> TuyaBLEData:
-    loaded: dict[str, TuyaBLEData] = hass.data.get(DOMAIN, {})
     entry_id = call.data.get("config_entry_id")
     if entry_id:
-        data = loaded.get(entry_id)
-        if data is None or data.device.product_id != "z1dfsaya":
+        data = _entry_runtime_data(hass, entry_id)
+        if data is None or data.device.product_id != PRODUCT_ID_350K:
             raise HomeAssistantError("Selected config entry is not a loaded 350K lock")
         return data
 
@@ -37,21 +55,14 @@ def _resolve_350k_data(hass: HomeAssistant, call: ServiceCall) -> TuyaBLEData:
         registry_device = dr.async_get(hass).async_get(device_id)
         if registry_device is None:
             raise HomeAssistantError("Home Assistant device was not found")
-        addresses = {
-            value
-            for domain, value in registry_device.identifiers
-            if domain == DOMAIN
-        }
-        candidates = [
-            data
-            for data in loaded.values()
-            if data.device.product_id == "z1dfsaya"
-            and data.device.address in addresses
-        ]
+        data = _entry_runtime_data(hass, registry_device.config_entry_id)
+        candidates = (
+            [data]
+            if data is not None and data.device.product_id == PRODUCT_ID_350K
+            else []
+        )
     else:
-        candidates = [
-            data for data in loaded.values() if data.device.product_id == "z1dfsaya"
-        ]
+        candidates = _loaded_350k_data(hass)
 
     if len(candidates) != 1:
         raise HomeAssistantError(
@@ -63,6 +74,7 @@ def _resolve_350k_data(hass: HomeAssistant, call: ServiceCall) -> TuyaBLEData:
 def async_register_services(hass: HomeAssistant) -> None:
     """Register idempotent domain services."""
     if not hass.services.has_service(DOMAIN, SERVICE_MARK_350K_TEST):
+
         async def async_mark(call: ServiceCall) -> None:
             data = _resolve_350k_data(hass, call)
             data.device.mark_350k_test(
@@ -84,6 +96,7 @@ def async_register_services(hass: HomeAssistant) -> None:
         )
 
     if not hass.services.has_service(DOMAIN, SERVICE_EXPORT_350K_DIAGNOSTICS):
+
         async def async_export(call: ServiceCall) -> dict[str, Any]:
             data = _resolve_350k_data(hass, call)
             return data.device.sanitized_diagnostics_snapshot()
