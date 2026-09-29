@@ -56,6 +56,8 @@ DP47 is the authoritative physical state observed from the lock:
 
 The unlocked report may arrive a few seconds after the initiating authentication event; callers should not infer motor state solely from an access event.
 
+The 350K's generic `FUN_SENDER_DEVICE_STATUS` request has not been observed to return DP47 on demand. It acknowledges the request and may emit other current datapoints such as battery/configuration state, but a successful status request must not be treated as proof that the physical lock state was refreshed. The Home Assistant button is therefore labeled **Request device status** rather than **Refresh lock status**.
+
 ### Secure/reverse lock
 
 Physical secure-lock operation produces DP32 and DP79 together:
@@ -68,6 +70,22 @@ Direct DP32 writes are acknowledged at the transport level but do not reliably c
 ### Remote lock
 
 DP46 (`manual_lock=true`) is confirmed to physically lock the 350K. DP47 remains the authoritative physical state. The experimental Home Assistant lock entity uses DP46 for Lock and does not update DP47 optimistically.
+
+Two Home Assistant-only DP46 lock operations produced the same timed DP20 record immediately before the authoritative DP47 locked report:
+
+```text
+04 00 00 00 ff
+```
+
+This is strong evidence that DP20 records beginning with `0x04` are associated with the remote/HA lock actuation path. The remaining bytes are not yet assigned semantics.
+
+A different timed DP20 record has repeatedly appeared around fresh connection/status synchronization without a user actuation:
+
+```text
+06 00 00 00 01
+```
+
+That value should not currently be interpreted as an access or motor action. It may represent a synchronization/status record or a replayed/current lock record; more captures are required.
 
 ## Implemented but awaiting physical validation
 
@@ -90,9 +108,11 @@ Previous Smart Life HCI captures showed the first app unlock after a fresh BLE c
 - DP19 (`unlock_ble`) is mirrored into the last-access-event sensors as `bluetooth_unlock` when reported.
 - DP31 is exposed as Lock volume (`mute`, `low`, `normal`, `high`).
 - DP28 is exposed as Lock language (`chinese_simplified`, `english`) for this product schema.
-- Disabled-by-default diagnostic sensors expose recent ACK latency and GATT write sizing/count without storing decrypted authorization material.
-- A disabled-by-default raw DP20 diagnostic retains the exact plaintext lock record for reverse engineering. It is intentionally separate from the sanitized recorder/export and must be treated as sensitive diagnostic data.
+- Diagnostic sensors expose recent ACK latency and GATT write sizing/count without storing decrypted authorization material.
+- A raw DP20 diagnostic retains the exact plaintext lock record for reverse engineering. It is intentionally separate from the sanitized recorder/export and must be treated as sensitive diagnostic data.
 
 ## BLE proxy reliability note
 
 An earlier long-delay/reliability problem was traced to faulty ESP proxy hardware. After replacing that ESP, command handling became reliable. Do not treat that earlier delay as evidence of an inherent 350K session or command-timing requirement.
+
+The integration now treats expected ESPHome proxy loss during disconnect as an already-closed link, aborts outstanding response waiters when the BLE transport disappears, and suppresses full tracebacks for those handled disconnect conditions. Unexpected exceptions still retain normal traceback logging.
