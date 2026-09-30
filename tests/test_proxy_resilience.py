@@ -43,6 +43,30 @@ class TestProxyResilience(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending, {})
         self.assertEqual(await completed, 0)
 
+    async def test_control_is_rejected_while_reconnect_is_in_progress(self) -> None:
+        self.assertTrue(
+            module.should_reject_control_during_reconnect(
+                connect_in_progress=True,
+                session_authenticated=False,
+            )
+        )
+
+    async def test_disconnected_control_can_start_its_own_connection(self) -> None:
+        self.assertFalse(
+            module.should_reject_control_during_reconnect(
+                connect_in_progress=False,
+                session_authenticated=False,
+            )
+        )
+
+    async def test_authenticated_control_is_not_rejected(self) -> None:
+        self.assertFalse(
+            module.should_reject_control_during_reconnect(
+                connect_in_progress=True,
+                session_authenticated=True,
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
